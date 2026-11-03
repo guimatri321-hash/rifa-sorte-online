@@ -83,7 +83,13 @@ type Configuracao = typeof CONFIG_PADRAO;
 async function lerConfig(): Promise<Configuracao> {
   const linhas = await q("SELECT chave, valor FROM configuracoes");
   const cfg: any = { ...CONFIG_PADRAO };
-  for (const l of linhas) if (l.chave in CONFIG_PADRAO) cfg[l.chave] = l.valor;
+  for (const l of linhas) if (l.chave in CONFIG_PADRAO) {
+    let v: any = l.valor;
+    // desfaz valores gravados com aspas duplicadas
+    for (let i = 0; i < 3 && typeof v === "string" && /^".*"$/s.test(v); i++) { try { v = JSON.parse(v); } catch { break; } }
+    if (typeof (CONFIG_PADRAO as any)[l.chave] === "number") v = Number(v);
+    cfg[l.chave] = v;
+  }
   return cfg;
 }
 function configPublica(c: Configuracao) {
@@ -651,7 +657,7 @@ Deno.serve(async (req: Request) => {
           else limpo[k] = texto(c[k], k === "regras" ? 4000 : 140);
         }
         for (const [k, v] of Object.entries(limpo))
-          await q("INSERT INTO configuracoes (chave, valor) VALUES ($1, $2::jsonb) ON CONFLICT (chave) DO UPDATE SET valor = EXCLUDED.valor", [k, JSON.stringify(v)]);
+          await q("INSERT INTO configuracoes (chave, valor) VALUES ($1, ($2::text)::jsonb) ON CONFLICT (chave) DO UPDATE SET valor = EXCLUDED.valor", [k, JSON.stringify(v)]);
         return json(await lerConfig());
       }
     }
