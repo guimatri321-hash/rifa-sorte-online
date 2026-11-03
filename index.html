@@ -1,0 +1,535 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Rifa Sorte Online</title>
+<meta name="description" content="Rifas online com números de 1 a 10.000. Escolha o prêmio, garanta seus números e pague por Pix.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,800&family=Figtree:wght@400;500;600;700&family=DM+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="estilo.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcode-generator/1.4.4/qrcode.min.js" defer></script>
+</head>
+<body class="site">
+<div class="aurora" aria-hidden="true"><i></i><i></i><i></i><i></i><canvas id="brilhos"></canvas></div>
+<div class="wrap">
+  <header class="top">
+    <a class="brand" href="#"><span class="mark">Nº</span><b id="siteName">Rifa Sorte Online</b></a>
+    <nav class="nav"><span class="quem" id="quem" hidden></span><a class="btn sm" href="#" id="navHome" hidden>Todas as rifas</a><a class="btn sm" href="#meus" id="navMeus">Meus números</a></nav>
+  </header>
+
+  <div id="view"></div>
+  <footer class="footer" id="rodape"></footer>
+</div>
+
+<div class="selbar" id="selbar" hidden>
+  <div class="in">
+    <div style="min-width:0"><b id="selCount"></b> · <b id="selTotal"></b><div class="list" id="selList"></div></div>
+    <div class="row end"><button class="btn ghost sm" id="clearSel" type="button">Limpar</button><button class="btn primary" id="buySel" type="button">Comprar estes números</button></div>
+  </div>
+</div>
+<div class="overlay" id="overlay" hidden><div class="modal" id="modal" role="dialog" aria-modal="true"></div></div>
+
+<script>
+(() => {
+"use strict";
+/* Alguns visualizadores bloqueiam o envio de formulários; os botões e o Enter disparam o envio pela própria página. */
+document.addEventListener("click", e => {
+  const b = e.target.closest && e.target.closest('button[type="submit"]');
+  if (!b || !b.form || b.disabled) return;
+  e.preventDefault();
+  b.form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+});
+document.addEventListener("keydown", e => {
+  if (e.key !== "Enter" || e.isComposing) return;
+  const t = e.target;
+  if (!t || !t.form || t.tagName === "TEXTAREA" || t.tagName === "BUTTON") return;
+  e.preventDefault();
+  t.form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+});
+
+const $ = id => document.getElementById(id);
+const fmt = n => Number(n).toLocaleString("pt-BR");
+const numFmt = (ini, fim) => n => ini === 0 ? String(n).padStart(String(fim).length, "0") : String(n);
+const fone = w => { const d = String(w || "").replace(/\D/g, ""); return d.length >= 10 ? `(${d.slice(0, 2)}) ${d.slice(2, d.length - 4)}-${d.slice(-4)}` : d; };
+const brl = v => (Number(v) || 0).toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
+const PAGE = 100;
+function h(tag, attrs, ...kids) {
+  const el = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs || {})) {
+    if (v == null || v === false) continue;
+    if (k === "class") el.className = v;
+    else if (k.startsWith("on")) el.addEventListener(k.slice(2), v);
+    else if (k === "text") el.textContent = v;
+    else el.setAttribute(k, v === true ? "" : v);
+  }
+  for (const c of kids.flat()) if (c != null && c !== false) el.append(c.nodeType ? c : document.createTextNode(String(c)));
+  return el;
+}
+const API = "https://ccgnncfjqvbvxutdnmja.supabase.co/functions/v1/api/";
+// Fotos que ficam junto com o site (pasta fotos/) chegam do servidor como ".../imagem/fotos/arquivo.jpg".
+function ajustarFotos(x) {
+  if (Array.isArray(x)) x.forEach(ajustarFotos);
+  else if (x && typeof x === "object") for (const k in x) {
+    if (k === "imagem" && typeof x[k] === "string") { const m = /\/imagem\/(fotos\/.+)$/.exec(x[k]); if (m) x[k] = m[1]; }
+    else ajustarFotos(x[k]);
+  }
+  return x;
+}
+async function api(path, opts = {}) {
+  const r = await fetch(API + path, { ...opts, headers: { "content-type": "application/json", ...(opts.headers || {}) } });
+  let data = {}; try { data = await r.json(); } catch {}
+  if (r.ok) ajustarFotos(data);
+  if (!r.ok) { const e = new Error(data.erro || "Não foi possível falar com o servidor."); e.data = data; e.status = r.status; throw e; }
+  return data;
+}
+// Guarda no navegador quando ele deixa; se o navegador bloquear, guarda na memória da página.
+const MEM = {};
+const store = {
+  get(k, d) {
+    if (k in MEM) return MEM[k];
+    try { const v = localStorage.getItem(k); if (v != null) return (MEM[k] = JSON.parse(v)); } catch {}
+    return d;
+  },
+  set(k, v) { MEM[k] = v; try { localStorage.setItem(k, JSON.stringify(v)); } catch {} }
+};
+let toastT;
+function toast(msg) {
+  let t = $("toast"); if (!t) { t = h("div", { id: "toast", class: "toast", role: "status" }); document.body.append(t); }
+  t.textContent = msg; t.hidden = false; clearTimeout(toastT); toastT = setTimeout(() => t.hidden = true, 3500);
+}
+function openModal(build) { const m = $("modal"); m.replaceChildren(); build(m); $("overlay").hidden = false; m.querySelector("input,button")?.focus(); }
+function closeModal() { $("overlay").hidden = true; }
+$("overlay").addEventListener("click", e => { if (e.target.id === "overlay") closeModal(); });
+addEventListener("keydown", e => { if (e.key === "Escape") closeModal(); });
+function maskPhone(v) { const d = v.replace(/\D/g, "").slice(0, 11); if (d.length <= 2) return d; if (d.length <= 7) return `(${d.slice(0, 2)}) ${d.slice(2)}`; return `(${d.slice(0, 2)}) ${d.slice(2, d.length - 4)}-${d.slice(-4)}`; }
+function copyBtn(text, el, label = "Copiar") {
+  const b = h("button", { class: "btn sm", type: "button", text: label });
+  b.addEventListener("click", () => {
+    const fb = () => { const r = document.createRange(); r.selectNodeContents(el); const s = getSelection(); s.removeAllRanges(); s.addRange(r); toast("Texto selecionado. Copie com o menu do celular."); };
+    try { navigator.clipboard.writeText(text).then(() => { b.textContent = "Copiado!"; setTimeout(() => b.textContent = label, 1800); }, fb); } catch { fb(); }
+  });
+  return b;
+}
+const waLink = (num, msg) => { const d = String(num || "").replace(/\D/g, ""); return d ? `https://wa.me/${d.length <= 11 ? "55" + d : d}?text=${encodeURIComponent(msg || "")}` : null; };
+
+let CFG = { nomeSite: "Rifa Sorte Online", chamada: "", maxPorPedido: 1000, minutosReserva: 30 };
+let timers = [];
+const clearTimers = () => { timers.forEach(t => clearInterval(t)); timers = []; };
+
+/* ---------------- roteamento ---------------- */
+async function route() {
+  clearTimers(); closeModal(); $("selbar").hidden = true;
+  const hash = location.hash.slice(1);
+  $("navHome").hidden = !hash;
+  window.scrollTo(0, 0);
+  renderQuem();
+  let m;
+  if ((m = hash.match(/^pedido-([A-Za-z0-9]+)$/))) return viewPedido(m[1]);
+  if (!comprador() || hash === "entrar") return viewEntrada(hash === "entrar" ? (() => { try { return sessionStorage.getItem("voltar") || ""; } catch { return ""; } })() : hash);
+  if ((m = hash.match(/^rifa-(\d+)$/))) return viewRifa(+m[1]);
+  if ((m = hash.match(/^pedido-([A-Za-z0-9]+)$/))) return viewPedido(m[1]);
+  if (hash === "meus") return viewMeus();
+  return viewHome();
+}
+addEventListener("hashchange", route);
+
+/* ---------------- identificação (primeira tela) ---------------- */
+const dig = v => String(v || "").replace(/\D/g, "");
+function cpfValido(c) {
+  c = dig(c); if (c.length !== 11 || /^(\d)\1{10}$/.test(c)) return false;
+  for (const t of [9, 10]) { let s = 0; for (let i = 0; i < t; i++) s += +c[i] * (t + 1 - i); if (((s * 10) % 11) % 10 !== +c[t]) return false; }
+  return true;
+}
+const maskCpf = v => { const d = dig(v).slice(0, 11); return d.replace(/(\d{3})(\d)/, "$1.$2").replace(/(\d{3})\.(\d{3})(\d)/, "$1.$2.$3").replace(/(\d{3})\.(\d{3})\.(\d{3})(\d)/, "$1.$2.$3-$4"); };
+const maskCep = v => { const d = dig(v).slice(0, 8); return d.length > 5 ? d.slice(0, 5) + "-" + d.slice(5) : d; };
+const cpfOculto = v => { const d = dig(v); return d.length === 11 ? `***.${d.slice(3, 6)}.${d.slice(6, 9)}-**` : ""; };
+function comprador() {
+  const c = store.get("comprador", null);
+  return c && c.nome && dig(c.whatsapp).length >= 10 && cpfValido(c.cpf) && dig(c.cep).length === 8 && c.numeroCasa ? c : null;
+}
+function renderQuem() {
+  const c = comprador(), el = $("quem");
+  el.hidden = !c; $("navMeus").hidden = !c;
+  if (!c) return;
+  el.replaceChildren("Olá, ", h("b", { text: c.nome.split(/\s+/)[0] }), " · ",
+    h("a", { href: "#entrar", onclick: () => { try { sessionStorage.setItem("voltar", location.hash.slice(1) === "entrar" ? "" : location.hash.slice(1)); } catch {} }, text: "trocar dados" }));
+}
+function viewEntrada(voltar) {
+  $("navHome").hidden = true;
+  const c = store.get("comprador", {}) || {};
+  const err = h("div", { class: "err", role: "alert" });
+  const endereco = h("p", { class: "meta", id: "eEnd", style: "margin-top:-6px", text: c.endereco || "" });
+  let local = { cidade: c.cidade || "", endereco: c.endereco || "" };
+  const cepIn = h("input", { id: "eCep", required: true, inputmode: "numeric", autocomplete: "postal-code", placeholder: "00000-000", value: maskCep(c.cep || "") });
+  let ultimoCep = dig(c.cep);
+  async function buscarCep() {
+    const d = dig(cepIn.value); if (d.length !== 8 || d === ultimoCep) return;
+    ultimoCep = d; endereco.textContent = "Buscando endereço…";
+    try {
+      const r = await fetch(`https://viacep.com.br/ws/${d}/json/`); const j = await r.json();
+      if (j.erro) { local = { cidade: "", endereco: "" }; endereco.textContent = "CEP não encontrado. Confira os números."; return; }
+      local = { cidade: `${j.localidade}/${j.uf}`, endereco: [j.logradouro, j.bairro, `${j.localidade}/${j.uf}`].filter(Boolean).join(", ") };
+      endereco.textContent = local.endereco;
+    } catch { local = { cidade: "", endereco: "" }; endereco.textContent = ""; }
+  }
+  cepIn.addEventListener("input", () => { cepIn.value = maskCep(cepIn.value); buscarCep(); });
+  const form = h("form", { class: "stack", novalidate: true },
+    h("label", { class: "f" }, "Nome completo", h("input", { id: "eNome", autocomplete: "name", placeholder: "Como está no seu documento", value: c.nome || "" })),
+    h("label", { class: "f" }, "CPF", h("input", { id: "eCpf", inputmode: "numeric", placeholder: "000.000.000-00", value: maskCpf(c.cpf || ""), oninput: e => e.target.value = maskCpf(e.target.value) })),
+    h("label", { class: "f" }, "WhatsApp com DDD", h("input", { id: "eWpp", inputmode: "tel", autocomplete: "tel", placeholder: "(67) 99999-9999", value: c.whatsapp || "", oninput: e => e.target.value = maskPhone(e.target.value) })),
+    h("div", { class: "row" },
+      h("label", { class: "f", style: "flex:2 1 160px" }, "CEP", cepIn),
+      h("label", { class: "f", style: "flex:1 1 100px" }, "Número da casa", h("input", { id: "eNum", autocomplete: "address-line2", placeholder: "Ex.: 120", value: c.numeroCasa || "" }))),
+    endereco,
+    err, h("button", { class: "btn primary big", type: "submit", text: "Continuar para as rifas" }));
+  form.addEventListener("submit", e => {
+    e.preventDefault();
+    const d = { nome: $("eNome").value.trim().replace(/\s+/g, " "), cpf: dig($("eCpf").value), whatsapp: $("eWpp").value, cep: dig(cepIn.value), numeroCasa: $("eNum").value.trim(), cidade: local.cidade, endereco: local.endereco };
+    const falha = d.nome.split(" ").length < 2 ? ["eNome", "Digite nome e sobrenome."]
+      : !cpfValido(d.cpf) ? ["eCpf", "CPF inválido. Confira os números."]
+      : dig(d.whatsapp).length < 10 ? ["eWpp", "Digite o WhatsApp com DDD."]
+      : d.cep.length !== 8 ? ["eCep", "Digite o CEP com 8 números."]
+      : !d.numeroCasa ? ["eNum", "Digite o número da casa (ou S/N)."] : null;
+    if (falha) { err.textContent = falha[1]; $(falha[0]).focus(); return; }
+    store.set("comprador", d);
+    try { sessionStorage.removeItem("voltar"); } catch {}
+    if (location.hash.slice(1) === (voltar || "")) route(); else location.hash = voltar || "";
+  });
+  setView(h("section", { class: "panel entrada" },
+    h("div", {}, h("div", { class: "eyebrow", text: "Bem-vindo" }), h("h1", { text: "Seus dados para participar" }),
+      h("p", { class: "muted", style: "margin-top:6px", text: "Usamos esses dados para registrar seus bilhetes e entregar o prêmio se você ganhar. Eles não aparecem para outras pessoas." })),
+    form));
+  setTimeout(() => $("eNome")?.focus(), 50);
+}
+
+function setView(...nodes) { $("view").replaceChildren(...nodes); }
+
+/* ---------------- vitrine ---------------- */
+const pctTxt = p => (p > 0 && p < 1 ? p.toLocaleString("pt-BR", { maximumFractionDigits: 1 }) : Math.floor(p).toLocaleString("pt-BR")) + "%";
+const diaMes = d => new Date(d).toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit" });
+function faltam(d) {
+  if (!d) return "";
+  const ms = new Date(d) - Date.now(); if (ms <= 0) return "";
+  const dias = Math.floor(ms / 864e5); if (dias >= 1) return dias === 1 ? "falta 1 dia" : `faltam ${dias} dias`;
+  const hrs = Math.floor(ms / 36e5); return hrs >= 1 ? `faltam ${hrs} h` : "últimos minutos";
+}
+async function viewHome() {
+  const cards = h("section", { class: "cards", "aria-label": "Rifas" }, h("div", { class: "empty", text: "Carregando rifas…" }));
+  setView(h("div", { style: "display:flex;flex-direction:column;gap:24px" },
+    h("section", { class: "hero" }, h("div", { class: "eyebrow", text: "Rifas abertas" }),
+      h("h1", {}, "Escolha o prêmio e ", h("span", { class: "grad-text", text: "garanta seus números" })),
+),
+    cards));
+  try {
+    const rifas = await api("rifas");
+    cards.replaceChildren();
+    if (!rifas.length) cards.append(h("div", { class: "empty", text: "Nenhuma rifa aberta no momento. Volte em breve." }));
+    let destacou = false;
+    for (const r of rifas) {
+      const pct = Math.min(100, r.pagos / r.total * 100), destaque = !destacou && r.vendasAbertas && rifas.filter(x => x.vendasAbertas).length > 1;
+      if (destaque) destacou = true;
+      const nf = numFmt(r.inicio ?? 1, (r.inicio ?? 1) + r.total - 1);
+      const quando = r.dataSorteio ? `Até ${diaMes(r.dataSorteio)}${faltam(r.dataSorteio) ? " · " + faltam(r.dataSorteio) : ""}` : "Data do sorteio a definir";
+      cards.append(h("a", { class: "card" + (destaque ? " destaque" : ""), href: "#rifa-" + r.id },
+        h("div", { class: "img" }, r.imagem ? h("img", { src: r.imagem, alt: r.titulo, loading: "lazy" }) : h("span", { class: "ph", text: "Nº" }),
+          r.numeroSorteado != null ? h("span", { class: "tag done", text: "Sorteada · nº " + nf(r.numeroSorteado) })
+            : !r.vendasAbertas ? h("span", { class: "tag done", text: "Vendas encerradas" })
+            : h("span", { class: "tag hot", text: destaque ? "Em destaque" : "Vendendo" })),
+        h("div", { class: "body" },
+          h("h3", { text: r.titulo }),
+          h("div", { class: "meta", text: quando + (r.extracao ? " · " + r.extracao : "") }),
+          h("div", {}, h("div", { class: "bar" }, h("i", { class: "prog", style: `width:${Math.max(pct, pct > 0 ? 2 : 0)}%` })),
+            h("div", { class: "meta", style: "margin-top:5px" }, h("b", { class: "grad-text", style: "font-size:1rem", text: pctTxt(pct) }), " vendido")),
+          h("div", { class: "foot" }, h("span", { class: "price" }, brl(r.preco), h("small", { text: " por bilhete" })),
+            h("span", { class: "btn primary" + (destaque ? "" : " sm"), text: r.vendasAbertas ? "Comprar números" : "Ver resultado" })))));
+    }
+  } catch (e) { cards.replaceChildren(h("div", { class: "empty", text: e.message })); }
+}
+
+/* ---------------- rifa ---------------- */
+async function viewRifa(id) {
+  setView(h("div", { class: "empty", text: "Carregando rifa…" }));
+  let R;
+  try { R = await api("rifas/" + id); } catch (e) { return setView(h("div", { class: "empty" }, e.message + " ", h("a", { href: "#", text: "Ver todas as rifas" }))); }
+  const S = { sel: new Set(), block: 0, page: 0, qty: 10, flash: null, pagos: new Set(), hold: new Set() };
+  const setData = d => { R = d; S.pagos = new Set(d.pagosLista); S.hold = new Set(d.reservadosLista); for (const n of [...S.sel]) if (S.pagos.has(n) || S.hold.has(n)) S.sel.delete(n); };
+  setData(R);
+  const INI = R.inicio ?? 1, FIM = INI + R.total - 1, nf = numFmt(INI, FIM);
+  const BLOCK = 1000, blocks = Math.ceil(R.total / BLOCK);
+  const blk = n => Math.floor((n - INI) / BLOCK);
+
+  // bilhete
+  const cd = h("div", { class: "cd" }, ["dias", "h", "min", "seg"].map(l => h("div", {}, h("b", { text: "--" }), h("span", { text: l }))));
+  const tick = () => {
+    const t = R.dataSorteio ? new Date(R.dataSorteio) - Date.now() : NaN, b = cd.querySelectorAll("b");
+    if (!isFinite(t)) return;
+    const s = Math.max(0, Math.floor(t / 1000));
+    [Math.floor(s / 86400), Math.floor(s % 86400 / 3600), Math.floor(s % 3600 / 60), s % 60].forEach((v, i) => b[i].textContent = String(v).padStart(2, "0"));
+  };
+  const ticket = h("section", { class: "ticket" },
+    h("div", { class: "ticket-main" },
+      h("div", { class: "prize-img" }, R.imagem ? h("img", { src: R.imagem, alt: "Foto do prêmio" }) : h("span", { class: "ph", text: "Nº" })),
+      h("div", { style: "min-width:0" }, h("div", { class: "eyebrow", text: R.vendasAbertas ? `Rifa aberta · números de ${nf(INI)} a ${nf(FIM)}` : "Vendas encerradas" }),
+        h("h1", { text: R.titulo }), R.descricao ? h("p", { class: "desc", text: R.descricao }) : null,
+        h("div", { class: "priceline" }, h("span", { class: "eyebrow", text: "Cada bilhete" }), h("b", { text: brl(R.preco) })),
+        R.telefone ? h("p", { class: "meta", style: "margin-top:10px" }, "Dúvidas: ", h("a", { href: waLink(R.telefone, `Olá! Tenho uma dúvida sobre a rifa ${R.titulo}.`), target: "_blank", rel: "noopener", text: fone(R.telefone) })) : null)),
+    h("aside", { class: "stub" }, h("div", { class: "eyebrow", text: "Sorteio em" }), cd,
+      h("div", { style: "font-size:.9rem", text: R.dataSorteio ? new Date(R.dataSorteio).toLocaleString("pt-BR", { weekday: "long", day: "2-digit", month: "long", hour: "2-digit", minute: "2-digit" }) : "Data a definir" }),
+      R.extracao ? h("div", { class: "meta", text: "Extração: " + R.extracao }) : null));
+  tick(); timers.push(setInterval(tick, 1000));
+
+  const winner = R.numeroSorteado != null ? h("section", { class: "winner" },
+    h("div", {}, h("div", { class: "eyebrow", text: "Número sorteado" }), h("div", { class: "big", text: nf(R.numeroSorteado) })),
+    h("div", {}, h("div", { class: "eyebrow", text: "Ganhador" }), h("div", { style: "font-family:var(--f-display);font-size:1.5rem;font-weight:800", text: R.ganhador?.nome || "—" }),
+      h("div", { style: "opacity:.8", text: [R.ganhador?.cidade, R.sorteadoEm && new Date(R.sorteadoEm).toLocaleString("pt-BR")].filter(Boolean).join(" · ") }))) : null;
+
+  // compra rápida (números aleatórios)
+  const MIN = Math.max(1, R.minimo || 1); S.qty = Math.max(S.qty, MIN);
+  const qtyIn = h("input", { id: "qty", type: "number", min: String(MIN), max: String(CFG.maxPorPedido), value: String(S.qty), inputmode: "numeric", "aria-label": "Quantidade de números" });
+  const totalEl = h("b", {});
+  const updQty = () => { S.qty = Math.max(MIN, Math.min(CFG.maxPorPedido, parseInt(qtyIn.value, 10) || MIN)); totalEl.textContent = brl(S.qty * R.preco); };
+  qtyIn.addEventListener("input", () => { totalEl.textContent = brl(Math.max(MIN, parseInt(qtyIn.value, 10) || MIN) * R.preco); });
+  qtyIn.addEventListener("change", () => { updQty(); qtyIn.value = S.qty; });
+  const add = d => { qtyIn.value = Math.max(MIN, Math.min(CFG.maxPorPedido, (parseInt(qtyIn.value, 10) || 0) + d)); updQty(); };
+  updQty();
+  const buy = R.vendasAbertas ? h("section", { class: "panel", "aria-label": "Compra rápida" },
+    h("div", {}, h("div", { class: "eyebrow", text: "Compra rápida" }), h("h2", { text: "Quantos números você quer?" }),
+      h("p", { class: "muted", style: "margin-top:4px", text: "O site escolhe números livres ao acaso. Para escolher números específicos, use a cartela abaixo." }),),
+    h("div", { class: "buy" },
+      h("div", { style: "display:flex;flex-direction:column;gap:10px" },
+        h("div", { class: "qty" }, h("button", { class: "step", type: "button", "aria-label": "Menos um", onclick: () => add(-1) }, "−"), qtyIn, h("button", { class: "step", type: "button", "aria-label": "Mais um", onclick: () => add(1) }, "+")),
+        h("div", { class: "chipsel" }, [5, 10, 25, 50, 100].map(n => h("button", { type: "button", onclick: () => add(n) }, "+" + n)))),
+      h("div", { class: "total" }, h("span", { class: "eyebrow", text: "Total" }), totalEl,
+        h("button", { class: "btn primary big", type: "button", style: "margin-top:8px", onclick: () => { updQty(); qtyIn.value = S.qty; checkout({ quantidade: S.qty }); } }, "Comprar")))) : null;
+
+  // cartela
+  const blockTabs = h("div", { class: "tabs", role: "group", "aria-label": "Milhares" });
+  const pageTabs = h("div", { class: "tabs pages", role: "group", "aria-label": "Centenas" });
+  const grid = h("div", { class: "grid" });
+  const counts = h("div", { class: "meta num" });
+  const jump = h("form", { class: "field" }, h("input", { id: "jump", inputmode: "numeric", placeholder: "Nº", "aria-label": "Procurar número" }), h("button", { class: "btn sm", type: "submit", text: "Procurar" }));
+  jump.addEventListener("submit", e => {
+    e.preventDefault();
+    const v = parseInt($("jump").value, 10);
+    if (!(v >= INI && v <= FIM)) return toast(`Digite um número de ${nf(INI)} a ${nf(FIM)}.`);
+    S.block = blk(v); S.page = Math.floor(((v - INI) % BLOCK) / PAGE); S.flash = v; renderBoard();
+    setTimeout(() => S.flash = null, 2600);
+    toast(S.pagos.has(v) ? `O ${nf(v)} já foi vendido.` : S.hold.has(v) ? `O ${nf(v)} está reservado.` : `O ${nf(v)} está livre. Toque nele para escolher.`);
+  });
+  function renderBoard() {
+    const livres = R.total - S.pagos.size - S.hold.size;
+    counts.textContent = `${fmt(livres)} livres · ${fmt(S.hold.size)} reservados · ${fmt(S.pagos.size)} pagos`;
+    blockTabs.replaceChildren(); pageTabs.replaceChildren(); grid.replaceChildren();
+    if (blocks > 1) for (let b = 0; b < blocks; b++) {
+      const a = INI + b * BLOCK, z = Math.min(FIM, a + BLOCK - 1);
+      let used = 0; for (const n of S.pagos) if (blk(n) === b) used++; for (const n of S.hold) if (blk(n) === b) used++;
+      blockTabs.append(h("button", { class: "tab", type: "button", "aria-pressed": String(b === S.block), onclick: () => { S.block = b; S.page = 0; renderBoard(); } }, `${nf(a)}–${nf(z)}`, h("small", { text: (z - a + 1 - used) + " livres" })));
+    }
+    const bStart = INI + S.block * BLOCK, bEnd = Math.min(FIM, bStart + BLOCK - 1), pages = Math.ceil((bEnd - bStart + 1) / PAGE);
+    if (pages > 1) for (let p = 0; p < pages; p++) { const a = bStart + p * PAGE; pageTabs.append(h("button", { class: "tab", type: "button", "aria-pressed": String(p === S.page), onclick: () => { S.page = p; renderBoard(); } }, `${nf(a)}–${nf(Math.min(bEnd, a + PAGE - 1))}`)); }
+    const start = bStart + S.page * PAGE, end = Math.min(bEnd, start + PAGE - 1);
+    for (let n = start; n <= end; n++) {
+      const st = S.pagos.has(n) ? "paid" : S.hold.has(n) ? "hold" : "free", sel = S.sel.has(n);
+      grid.append(h("button", { class: ["cell", st !== "free" && st, sel && "sel", S.flash === n && "flash"].filter(Boolean).join(" "), type: "button",
+        "aria-label": `Número ${nf(n)}, ${st === "free" ? "livre" : st === "paid" ? "vendido" : "reservado"}`, "aria-pressed": st === "free" ? String(sel) : null,
+        disabled: st !== "free" || !R.vendasAbertas || null, onclick: () => toggle(n) }, nf(n)));
+    }
+    renderSelbar();
+  }
+  function toggle(n) {
+    if (S.sel.has(n)) S.sel.delete(n);
+    else { if (S.sel.size >= CFG.maxPorPedido) return toast(`O máximo por compra é ${CFG.maxPorPedido} números.`); S.sel.add(n); }
+    renderBoard();
+  }
+  function renderSelbar() {
+    const n = S.sel.size; $("selbar").hidden = n === 0;
+    $("selCount").textContent = (n === 1 ? "1 número" : n + " números") + (n < MIN ? ` · escolha mais ${MIN - n}` : "");
+    $("buySel").disabled = n < MIN;
+    $("selTotal").textContent = brl(n * R.preco);
+    $("selList").textContent = [...S.sel].sort((a, b) => a - b).map(nf).join(" · ");
+  }
+  $("clearSel").onclick = () => { S.sel.clear(); renderBoard(); };
+  $("buySel").onclick = () => { if (S.sel.size < MIN) return toast(`A compra mínima é de ${MIN} bilhetes.`); checkout({ numeros: [...S.sel].sort((a, b) => a - b) }); };
+
+  const board = h("section", { class: "panel", "aria-label": "Cartela" },
+    h("div", { class: "board-head" }, h("div", {}, h("div", { class: "eyebrow", text: "Escolha na cartela" }), h("h2", { text: "Cartela de números" }), counts), jump),
+    blockTabs, pageTabs, grid,
+    h("div", { class: "legend" },
+      h("span", {}, h("i", { style: "background:var(--free-bg)" }), "Livre"),
+      h("span", {}, h("i", { style: "background:var(--grad);border-color:transparent" }), "Escolhido"),
+      h("span", {}, h("i", { style: "background:var(--hold-bg);border-color:var(--hold)" }), "Reservado"),
+      h("span", {}, h("i", { style: "background:var(--paid-bg);border-color:var(--paid-bg)" }), "Vendido")));
+  renderBoard();
+  setView(h("div", { style: "display:flex;flex-direction:column;gap:22px" }, ticket, winner, buy, board));
+
+  // atualiza a cartela a cada 20 s
+  timers.push(setInterval(async () => { if (!$("overlay").hidden || document.hidden) return; try { setData(await api("rifas/" + id)); renderBoard(); } catch {} }, 20000));
+
+  function checkout(escolha) {
+    const qtd = escolha.numeros ? escolha.numeros.length : escolha.quantidade;
+    const dados = comprador();
+    if (!dados) { location.hash = "entrar"; return; }
+    openModal(m => {
+      const err = h("div", { class: "err", role: "alert" });
+      const go = h("button", { class: "btn primary", type: "button", text: `Reservar e pagar ${brl(qtd * R.preco)}` });
+      go.addEventListener("click", async () => {
+        go.disabled = true; go.textContent = "Reservando…"; err.textContent = "";
+        try {
+          const r = await api(`rifas/${id}/reservar`, { method: "POST", body: JSON.stringify({ ...dados, ...escolha }) });
+          const meus = store.get("pedidos", []); meus.unshift(r.codigo); store.set("pedidos", meus.slice(0, 30));
+          S.sel.clear(); closeModal(); location.hash = "pedido-" + r.codigo;
+        } catch (ex) {
+          go.disabled = false; go.textContent = `Reservar e pagar ${brl(qtd * R.preco)}`;
+          err.textContent = ex.message + (ex.data?.indisponiveis ? ` (${ex.data.indisponiveis.map(nf).join(", ")})` : "");
+          if (ex.data?.indisponiveis) { ex.data.indisponiveis.forEach(n => { S.sel.delete(n); S.hold.add(n); }); renderBoard(); }
+        }
+      });
+      m.append(h("div", {}, h("div", { class: "eyebrow", text: R.titulo }), h("h2", { text: "Confirme sua compra" })),
+        escolha.numeros ? h("div", { class: "chips" }, escolha.numeros.slice(0, 60).map(n => h("span", { class: "chip", text: nf(n) })), escolha.numeros.length > 60 ? h("span", { class: "chip", text: `+${escolha.numeros.length - 60}` }) : null)
+          : h("p", {}, h("b", { text: qtd + (qtd === 1 ? " bilhete" : " bilhetes") }), " escolhidos ao acaso entre os livres."),
+        h("dl", { class: "kv" }, h("dt", { text: "Nome" }), h("dd", { text: dados.nome }), h("dt", { text: "CPF" }), h("dd", { class: "num", text: cpfOculto(dados.cpf) }), h("dt", { text: "WhatsApp" }), h("dd", { class: "num", text: dados.whatsapp }), h("dt", { text: "Endereço" }), h("dd", { text: `CEP ${maskCep(dados.cep)}, nº ${dados.numeroCasa}` + (dados.cidade ? ` · ${dados.cidade}` : "") }), h("dt", { text: "Total" }), h("dd", {}, h("b", { text: brl(qtd * R.preco) }))),
+        h("p", { class: "muted", style: "font-size:.9rem", text: `Os números ficam reservados por ${CFG.minutosReserva} minutos enquanto você paga.` }),
+        err,
+        h("div", { class: "row end" },
+          h("a", { class: "btn", href: "#entrar", onclick: () => { try { sessionStorage.setItem("voltar", "rifa-" + id); } catch {} }, text: "Alterar meus dados" }),
+          go));
+    });
+  }
+}
+
+/* ---------------- pedido / pagamento ---------------- */
+async function viewPedido(codigo) {
+  setView(h("div", { class: "empty", text: "Carregando seu pedido…" }));
+  let lastStatus = null;
+  async function load() {
+    let p;
+    try { p = await api("pedidos/" + codigo); } catch (e) { return setView(h("div", { class: "empty", text: e.message })); }
+    if (p.status === lastStatus && p.status !== "pendente") return;
+    if (lastStatus === "pendente" && p.status === "pendente") return updateTimer(p);
+    lastStatus = p.status;
+    render(p);
+  }
+  let timerEl;
+  function updateTimer(p) {
+    if (!timerEl) return;
+    const s = Math.max(0, Math.floor((new Date(p.expiraEm) - Date.now()) / 1000));
+    timerEl.textContent = `${String(Math.floor(s / 60)).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`;
+  }
+  function render(p) {
+    const nf = numFmt(p.inicio ?? 1, (p.inicio ?? 1) + (p.total || 0) - 1);
+    const titulo = { pendente: "Pague para garantir seus números", pago: "Pagamento confirmado!", expirado: "O prazo de pagamento acabou", cancelado: "Pedido cancelado" }[p.status];
+    const blocks = [];
+    blocks.push(h("section", { class: "panel" },
+      h("div", { class: "row", style: "align-items:center" }, h("div", {}, h("div", { class: "eyebrow", text: "Pedido " + p.codigo }), h("h1", { style: "font-size:clamp(1.6rem,4vw,2.2rem)", text: titulo })),
+        h("div", { style: "flex:0 0 auto" }, h("span", { class: "status " + p.status, text: p.status }))),
+      h("dl", { class: "kv" },
+        h("dt", { text: "Rifa" }), h("dd", {}, h("a", { href: "#rifa-" + p.rifaId, text: p.rifaTitulo })),
+        h("dt", { text: "Comprador" }), h("dd", { text: p.nome }),
+        h("dt", { text: "Quantidade" }), h("dd", { class: "num", text: fmt(p.quantidade) + (p.quantidade === 1 ? " bilhete" : " bilhetes") }),
+        h("dt", { text: "Valor" }), h("dd", { class: "num", text: brl(p.valor) })),
+      h("div", {}, h("div", { class: "eyebrow", style: "margin-bottom:6px", text: "Seus números" }),
+        h("div", { class: "chips" }, p.numeros.map(n => h("span", { class: "chip " + (p.status === "pago" ? "paid" : p.status === "pendente" ? "hold" : ""), text: nf(n) }))))));
+    if (p.status === "pendente") {
+      timerEl = h("b", { class: "num", style: "font-size:1.6rem" });
+      const pay = h("section", { class: "panel" },
+        h("div", { class: "row", style: "align-items:end" }, h("div", {}, h("div", { class: "eyebrow", text: "Pagamento por Pix" }), h("h2", { text: brl(p.valor) })),
+          h("div", { style: "flex:0 0 auto;text-align:right" }, h("div", { class: "eyebrow", text: "Tempo para pagar" }), timerEl)));
+      if (p.pix) {
+        const code = h("div", { class: "copia", text: p.pix.copiaCola });
+        const qrBox = h("div", { class: "qr", "aria-label": "QR Code Pix" });
+        try { const qr = window.qrcode(0, "M"); qr.addData(p.pix.copiaCola); qr.make(); qrBox.innerHTML = qr.createSvgTag({ cellSize: 4, margin: 0, scalable: true }); }
+        catch { qrBox.hidden = true; }
+        pay.append(h("div", { class: "pixbox" }, qrBox,
+          h("div", { style: "display:flex;flex-direction:column;gap:10px;min-width:0;width:100%" },
+            h("p", { text: "Abra o app do seu banco, escolha Pix e leia o QR Code, ou use o Pix Copia e Cola:" }),
+            code, h("div", {}, copyBtn(p.pix.copiaCola, code, "Copiar código Pix")),
+            p.pix.nome ? h("p", { class: "meta", text: "Recebedor: " + p.pix.nome }) : null)));
+        pay.append(h("p", { class: "muted", style: "font-size:.9rem", text: "Depois de pagar, esta página muda para Pagamento confirmado assim que o organizador confirmar. Guarde o código do pedido." }));
+      } else {
+        pay.append(h("div", { class: "note warn", text: "O pagamento por Pix ainda está sendo configurado. Fale com o organizador pelo WhatsApp para pagar e garantir seus números." }));
+      }
+      const wa = waLink(p.whatsappOrganizador, `Olá! Fiz o pedido ${p.codigo} (${p.quantidade} números, ${brl(p.valor)}) na rifa ${p.rifaTitulo}.`);
+      if (wa) pay.append(h("div", {}, h("a", { class: "btn", href: wa, target: "_blank", rel: "noopener", text: "Enviar comprovante pelo WhatsApp" })));
+      blocks.push(pay);
+      updateTimer(p);
+      timers.push(setInterval(() => updateTimer(p), 1000));
+    } else if (p.status === "expirado") {
+      blocks.push(h("div", { class: "note warn" }, "Os números voltaram a ficar livres. Se você já pagou, fale com o organizador e informe o código ", h("b", { text: p.codigo }), ". ", h("a", { href: "#rifa-" + p.rifaId, text: "Fazer um novo pedido" })));
+    } else if (p.status === "pago") {
+      blocks.push(h("p", { class: "ok", text: "Seus números estão garantidos. Boa sorte no sorteio!" }));
+    }
+    setView(h("div", { style: "display:flex;flex-direction:column;gap:22px" }, ...blocks));
+  }
+  await load();
+  timers.push(setInterval(() => { if (!document.hidden) load(); }, 6000));
+}
+
+/* ---------------- meus números ---------------- */
+function viewMeus() {
+  const salvo = store.get("comprador", {});
+  const out = h("div", { style: "display:flex;flex-direction:column;gap:12px" });
+  const input = h("input", { id: "mWpp", inputmode: "tel", placeholder: "(67) 99999-9999", value: salvo.whatsapp || "", oninput: e => e.target.value = maskPhone(e.target.value), style: "width:180px" });
+  const form = h("form", { class: "field", style: "align-self:flex-start" }, input, h("button", { class: "btn sm primary", type: "submit", text: "Buscar" }));
+  async function buscar() {
+    out.replaceChildren(h("p", { class: "muted", text: "Buscando…" }));
+    try {
+      const lista = await api("meus?whatsapp=" + encodeURIComponent(input.value));
+      out.replaceChildren();
+      if (!lista.length) return out.append(h("div", { class: "note", text: "Nenhum pedido ativo para este WhatsApp." }));
+      for (const p of lista) { const nf = numFmt(p.inicio ?? 1, (p.inicio ?? 1) + (p.total || 0) - 1); out.append(h("a", { class: "panel", href: "#pedido-" + p.codigo, style: "text-decoration:none;color:inherit" },
+        h("div", { class: "row", style: "align-items:center" }, h("div", {}, h("b", { text: p.rifaTitulo }), h("div", { class: "meta", text: `Pedido ${p.codigo} · ${brl(p.valor)}` })),
+          h("div", { style: "flex:0 0 auto" }, h("span", { class: "status " + p.status, text: p.status }))),
+        h("div", { class: "chips" }, p.numeros.slice(0, 80).map(n => h("span", { class: "chip " + (p.status === "pago" ? "paid" : "hold"), text: nf(n) })), p.numeros.length > 80 ? h("span", { class: "chip", text: `+${p.numeros.length - 80}` }) : null))); }
+    } catch (e) { out.replaceChildren(h("p", { class: "err", text: e.message })); }
+  }
+  form.addEventListener("submit", e => { e.preventDefault(); buscar(); });
+  setView(h("section", { class: "panel" }, h("div", {}, h("div", { class: "eyebrow", text: "Consulta" }), h("h1", { style: "font-size:2rem", text: "Meus números" }),
+    h("p", { class: "muted", style: "margin-top:4px", text: "Digite o WhatsApp usado na compra para ver seus pedidos." })), form, out));
+  if (input.value) buscar();
+}
+
+/* ---------------- início ---------------- */
+(async () => {
+  try { CFG = { ...CFG, ...(await api("config")) }; } catch {}
+  $("siteName").textContent = CFG.nomeSite; document.title = CFG.nomeSite;
+  $("rodape").textContent = CFG.regras || "";
+  route();
+})();
+})();
+</script>
+<script>
+/* brilhos no fundo */
+(() => {
+  const c = document.getElementById("brilhos"); if (!c) return;
+  const ctx = c.getContext("2d"), parado = matchMedia("(prefers-reduced-motion: reduce)").matches;
+  let W, H, pts = [];
+  const cores = ["255,183,3", "255,77,109", "255,138,31", "193,59,245", "255,255,255"];
+  function tam() {
+    const d = Math.min(2, devicePixelRatio || 1); W = c.width = innerWidth * d; H = c.height = innerHeight * d;
+    const n = Math.round(Math.min(70, innerWidth / 18));
+    pts = Array.from({ length: n }, () => ({ x: Math.random() * W, y: Math.random() * H, r: (Math.random() * 1.8 + .6) * d, f: Math.random() * 6.28, v: .6 + Math.random() * 1.4, dy: (.05 + Math.random() * .15) * d, cor: cores[Math.floor(Math.random() * cores.length)] }));
+  }
+  function estrela(p, a) {
+    ctx.fillStyle = `rgba(${p.cor},${a})`; ctx.beginPath();
+    const r = p.r * 2.6, k = p.r * .5;
+    ctx.moveTo(p.x, p.y - r); ctx.lineTo(p.x + k, p.y - k); ctx.lineTo(p.x + r, p.y); ctx.lineTo(p.x + k, p.y + k);
+    ctx.lineTo(p.x, p.y + r); ctx.lineTo(p.x - k, p.y + k); ctx.lineTo(p.x - r, p.y); ctx.lineTo(p.x - k, p.y - k); ctx.closePath(); ctx.fill();
+  }
+  function quadro(t) {
+    ctx.clearRect(0, 0, W, H);
+    for (const p of pts) {
+      const a = parado ? .5 : (Math.sin(t / 1000 * p.v + p.f) + 1) / 2 * .8 + .1;
+      if (!parado) { p.y -= p.dy; if (p.y < -10) { p.y = H + 10; p.x = Math.random() * W; } }
+      estrela(p, a);
+    }
+    if (!parado && !document.hidden) requestAnimationFrame(quadro);
+  }
+  tam(); addEventListener("resize", tam);
+  document.addEventListener("visibilitychange", () => { if (!document.hidden && !parado) requestAnimationFrame(quadro); });
+  requestAnimationFrame(quadro);
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,379 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="robots" content="noindex">
+<title>Painel · Rifa Sorte Online</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,800&family=Figtree:wght@400;500;600;700&family=DM+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="estilo.css">
+<style>
+.atabs{display:flex;gap:6px;flex-wrap:wrap;border-bottom:1px solid var(--line);padding-bottom:10px}
+.atabs button{border:1px solid var(--line);background:var(--paper);border-radius:999px;padding:7px 14px;font-weight:600}
+.atabs button[aria-pressed="true"]{background:var(--ink);color:var(--bg);border-color:var(--ink)}
+.stats{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}
+.stat{background:var(--paper);border:1px solid var(--line);border-radius:var(--r);padding:12px 14px}
+.stat b{display:block;font-family:var(--f-num);font-size:1.3rem;font-weight:500}
+.stat span{font-size:.8rem;color:var(--muted)}
+.rlist,.olist{display:flex;flex-direction:column;gap:10px}
+.ritem{background:var(--paper);border:1px solid var(--line);border-radius:14px;padding:14px 16px;display:grid;grid-template-columns:72px minmax(0,1fr) auto;gap:14px;align-items:center}
+.thumb{width:72px;height:72px;border-radius:10px;background:var(--bg);overflow:hidden;display:grid;place-items:center;border:1px solid var(--line)}
+.thumb img{width:100%;height:100%;object-fit:cover}
+.acts{display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end}
+.order{background:var(--paper);border:1px solid var(--line);border-radius:12px;padding:12px 14px;display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px}
+.filters{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.filters select,.filters input{border:1px solid var(--line);background:var(--paper);border-radius:999px;padding:7px 12px}
+.roll{font-family:var(--f-num);font-size:3.4rem;text-align:center;padding:6px 0}
+@media (max-width:760px){.stats{grid-template-columns:repeat(2,minmax(0,1fr))}.ritem{grid-template-columns:56px minmax(0,1fr)}.ritem .acts{grid-column:1/-1;justify-content:flex-start}.thumb{width:56px;height:56px}.order{grid-template-columns:1fr}}
+</style>
+</head>
+<body class="painel">
+<header class="faixa">
+  <div class="in">
+    <a class="brand" href="admin"><span class="mark">Nº</span><b>Painel dos organizadores</b></a>
+    <nav class="nav"><span class="aovivo" id="aovivo" hidden><i></i>Ligado ao site, atualiza sozinho</span><span class="quem" id="quem"></span><a class="btn sm" href="./" target="_blank" rel="noopener">Ver o site</a><button class="btn sm" id="sair" type="button" hidden>Sair</button></nav>
+  </div>
+</header>
+<div class="wrap">
+  <div id="view"></div>
+</div>
+<div class="overlay" id="overlay" hidden><div class="modal" id="modal" role="dialog" aria-modal="true"></div></div>
+
+<script>
+(() => {
+"use strict";
+/* Alguns visualizadores bloqueiam o envio de formulários; os botões e o Enter disparam o envio pela própria página. */
+document.addEventListener("click", e => {
+  const b = e.target.closest && e.target.closest('button[type="submit"]');
+  if (!b || !b.form || b.disabled) return;
+  e.preventDefault();
+  b.form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+});
+document.addEventListener("keydown", e => {
+  if (e.key !== "Enter" || e.isComposing) return;
+  const t = e.target;
+  if (!t || !t.form || t.tagName === "TEXTAREA" || t.tagName === "BUTTON") return;
+  e.preventDefault();
+  t.form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+});
+
+const $ = id => document.getElementById(id);
+const fmt = n => Number(n).toLocaleString("pt-BR");
+const brl = v => (Number(v) || 0).toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
+const dt = s => s ? new Date(s).toLocaleString("pt-BR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }) : "—";
+function h(tag, attrs, ...kids) {
+  const el = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs || {})) {
+    if (v == null || v === false) continue;
+    if (k === "class") el.className = v;
+    else if (k.startsWith("on")) el.addEventListener(k.slice(2), v);
+    else if (k === "text") el.textContent = v;
+    else el.setAttribute(k, v === true ? "" : v);
+  }
+  for (const c of kids.flat()) if (c != null && c !== false) el.append(c.nodeType ? c : document.createTextNode(String(c)));
+  return el;
+}
+let TOKEN = (() => { try { return sessionStorage.getItem("adm") || ""; } catch { return ""; } })();
+let NOME = (() => { try { return sessionStorage.getItem("admnome") || ""; } catch { return ""; } })();
+const API = "https://ccgnncfjqvbvxutdnmja.supabase.co/functions/v1/api/";
+// Fotos que ficam junto com o site (pasta fotos/) chegam do servidor como ".../imagem/fotos/arquivo.jpg".
+function ajustarFotos(x) {
+  if (Array.isArray(x)) x.forEach(ajustarFotos);
+  else if (x && typeof x === "object") for (const k in x) {
+    if (k === "imagem" && typeof x[k] === "string") { const m = /\/imagem\/(fotos\/.+)$/.exec(x[k]); if (m) x[k] = m[1]; }
+    else ajustarFotos(x[k]);
+  }
+  return x;
+}
+async function api(path, opts = {}) {
+  const r = await fetch(API + path, { ...opts, headers: { "content-type": "application/json", "x-admin-token": TOKEN, ...(opts.headers || {}) } });
+  let data = {}; try { data = await r.json(); } catch {}
+  if (r.status === 401 && path !== "admin/login") { sair(); throw new Error(data.erro || "Entre de novo."); }
+  if (r.ok) ajustarFotos(data);
+  if (!r.ok) { const e = new Error(data.erro || "Não foi possível falar com o servidor."); e.data = data; throw e; }
+  return data;
+}
+let toastT;
+function toast(msg) { let t = $("toast"); if (!t) { t = h("div", { id: "toast", class: "toast", role: "status" }); document.body.append(t); } t.textContent = msg; t.hidden = false; clearTimeout(toastT); toastT = setTimeout(() => t.hidden = true, 3500); }
+function openModal(build) { const m = $("modal"); m.replaceChildren(); build(m); $("overlay").hidden = false; m.querySelector("input,button")?.focus(); }
+function closeModal() { $("overlay").hidden = true; }
+$("overlay").addEventListener("click", e => { if (e.target.id === "overlay") closeModal(); });
+addEventListener("keydown", e => { if (e.key === "Escape") closeModal(); });
+function confirmBtn(label, confirmLabel, action, cls = "danger") {
+  const b = h("button", { class: "btn sm " + cls, type: "button", text: label }); let armed = false, t;
+  b.addEventListener("click", async () => {
+    if (!armed) { armed = true; b.textContent = confirmLabel; t = setTimeout(() => { armed = false; b.textContent = label; }, 3500); return; }
+    clearTimeout(t); b.disabled = true; try { await action(); } catch (e) { toast(e.message); } b.disabled = false; armed = false; b.textContent = label;
+  });
+  return b;
+}
+const waLink = (num, msg) => { const d = String(num || "").replace(/\D/g, ""); return d ? `https://wa.me/${d.length <= 11 ? "55" + d : d}?text=${encodeURIComponent(msg || "")}` : null; };
+const numFmt = (ini, total) => n => ini === 0 ? String(n).padStart(String(ini + total - 1).length, "0") : String(n);
+const nfRifa = id => { const r = RIFAS.find(x => x.id === id); return r ? numFmt(r.inicio ?? 1, r.total) : String; };
+const EXTRACOES = ["Live no Instagram", "Loteria Federal", "Live no YouTube", "Live no TikTok", "Sorteio no site"];
+const QTDS = [25, 50, 100, 200, 300, 500, 1000, 2000, 3000, 5000, 10000, 20000, 50000, 100000];
+const maskPhone = v => { const d = v.replace(/\D/g, "").slice(0, 11); if (d.length <= 2) return d; if (d.length <= 7) return `(${d.slice(0, 2)}) ${d.slice(2)}`; return `(${d.slice(0, 2)}) ${d.slice(2, d.length - 4)}-${d.slice(-4)}`; };
+const cpfFmt = c => c && c.length === 11 ? `${c.slice(0, 3)}.${c.slice(3, 6)}.${c.slice(6, 9)}-${c.slice(9)}` : c || "";
+const fone = w => w && w.length >= 10 ? `(${w.slice(0, 2)}) ${w.slice(2, w.length - 4)}-${w.slice(-4)}` : w;
+function setView(...n) { $("view").replaceChildren(...n); }
+function sair() { TOKEN = ""; NOME = ""; try { sessionStorage.removeItem("adm"); sessionStorage.removeItem("admnome"); } catch {} $("sair").hidden = true; $("aovivo").hidden = true; $("quem").textContent = ""; clearInterval(POLL); login(); }
+$("sair").onclick = sair;
+
+/* ---------------- login ---------------- */
+async function login() {
+  const err = h("div", { class: "err", role: "alert" });
+  let nomes = [];
+  try { nomes = await api("admin/organizadores"); } catch (e) { err.textContent = e.message; }
+  const quem = nomes.length
+    ? h("select", { id: "quemEntra" }, nomes.map(n => h("option", { value: n, text: n })))
+    : h("input", { id: "quemEntra", autocomplete: "username" });
+  const form = h("form", { class: "stack" },
+    h("label", { class: "f" }, "Quem está entrando", quem),
+    h("label", { class: "f" }, "Senha", h("div", { style: "display:flex;gap:8px" },
+      h("input", { id: "senha", type: "password", autocomplete: "current-password", required: true, style: "flex:1;min-width:0" }),
+      h("button", { class: "btn sm", type: "button", onclick: e => { const i = $("senha"); i.type = i.type === "password" ? "text" : "password"; e.currentTarget.textContent = i.type === "password" ? "Mostrar" : "Ocultar"; } }, "Mostrar"))),
+    err, h("button", { class: "btn primary big", type: "submit", text: "Entrar no painel" }));
+  form.addEventListener("submit", async e => {
+    e.preventDefault(); err.textContent = "";
+    try {
+      const r = await api("admin/login", { method: "POST", body: JSON.stringify({ nome: $("quemEntra").value, senha: $("senha").value }) });
+      TOKEN = r.token; NOME = r.nome; try { sessionStorage.setItem("adm", TOKEN); sessionStorage.setItem("admnome", NOME); } catch {}
+      painel();
+    } catch (ex) { err.textContent = ex.message; }
+  });
+  setView(h("section", { class: "panel", style: "max-width:440px;margin:40px auto 0;width:100%;padding:30px" },
+    h("div", {}, h("div", { class: "eyebrow", text: "Acesso só dos organizadores" }), h("h1", { style: "font-size:2rem", text: "Entrar no painel" }),
+      h("p", { class: "muted", style: "margin-top:6px", text: "Cada organizador tem a própria senha. O painel mostra quem confirmou cada pagamento." })), form));
+}
+
+/* ---------------- painel ---------------- */
+let ABA = "rifas", RIFAS = [];
+let POLL = 0, REFRESH = null, ASSINATURA = "";
+function painel() {
+  $("sair").hidden = false; $("aovivo").hidden = false;
+  $("quem").textContent = NOME ? "Olá, " + NOME : "";
+  REFRESH = null;
+  clearInterval(POLL);
+  POLL = setInterval(async () => {
+    if (document.hidden || !$("overlay").hidden || document.activeElement?.matches("input,textarea,select")) return;
+    try {
+      const r = await api("admin/resumo");
+      const sig = JSON.stringify(r.map(x => [x.id, x.pagos, x.ocupados, x.pendentes, x.recebido, x.status, x.numeroSorteado]));
+      if (ASSINATURA && sig !== ASSINATURA && REFRESH) { const antes = JSON.parse(ASSINATURA); const novos = r.reduce((a, x) => a + x.pendentes, 0) - antes.reduce((a, x) => a + x[3], 0); if (novos > 0) toast(novos === 1 ? "Chegou 1 pedido novo." : `Chegaram ${novos} pedidos novos.`); REFRESH(); }
+      ASSINATURA = sig;
+    } catch {}
+  }, 12000);
+  const tabs = h("div", { class: "atabs", role: "tablist" },
+    [["rifas", "Rifas"], ["pedidos", "Pedidos"], ["config", "Configurações"]].map(([k, l]) =>
+      h("button", { type: "button", "aria-pressed": String(ABA === k), onclick: () => { ABA = k; painel(); } }, l)));
+  const corpo = h("div", { style: "display:flex;flex-direction:column;gap:16px" });
+  setView(h("div", { style: "display:flex;flex-direction:column;gap:18px" }, tabs, corpo));
+  ({ rifas: abaRifas, pedidos: abaPedidos, config: abaConfig })[ABA](corpo);
+}
+
+/* ---------- aba rifas ---------- */
+async function abaRifas(box) {
+  REFRESH = () => { if (ABA === "rifas") painel(); };
+  if (!box.childElementCount) box.append(h("p", { class: "muted", text: "Carregando…" }));
+  try { RIFAS = await api("admin/resumo"); ASSINATURA = JSON.stringify(RIFAS.map(x => [x.id, x.pagos, x.ocupados, x.pendentes, x.recebido, x.status, x.numeroSorteado])); } catch (e) { return box.replaceChildren(h("p", { class: "err", text: e.message })); }
+  const tot = RIFAS.reduce((a, r) => ({ rec: a.rec + r.recebido, ar: a.ar + r.aReceber, pend: a.pend + r.pendentes, ativas: a.ativas + (r.vendasAbertas ? 1 : 0) }), { rec: 0, ar: 0, pend: 0, ativas: 0 });
+  box.replaceChildren(
+    h("section", { class: "stats" },
+      h("div", { class: "stat" }, h("b", { text: brl(tot.rec) }), h("span", { text: "recebido (pagos)" })),
+      h("div", { class: "stat" }, h("b", { text: brl(tot.ar) }), h("span", { text: "aguardando Pix" })),
+      h("div", { class: "stat" }, h("b", { text: fmt(tot.pend) }), h("span", { text: "pedidos pendentes" })),
+      h("div", { class: "stat" }, h("b", { text: fmt(tot.ativas) }), h("span", { text: "rifas com vendas abertas" }))),
+    h("div", { class: "row", style: "align-items:center" }, h("h2", { text: "Rifas" }), h("div", { style: "flex:0 0 auto" }, h("button", { class: "btn primary", type: "button", onclick: () => rifaModal(null), text: "Nova rifa" }))));
+  const list = h("div", { class: "rlist" });
+  if (!RIFAS.length) list.append(h("div", { class: "empty", text: "Nenhuma rifa ainda. Toque em Nova rifa para cadastrar o primeiro produto." }));
+  const statusTxt = r => r.status === "oculta" ? "oculta" : r.status === "sorteada" ? "sorteada" : r.vendasAbertas ? "vendendo" : "encerrada";
+  for (const r of RIFAS) {
+    list.append(h("div", { class: "ritem" },
+      h("div", { class: "thumb" }, r.imagem ? h("img", { src: r.imagem, alt: "" }) : h("span", { class: "ph", style: "font-size:1rem", text: "Nº" })),
+      h("div", { style: "min-width:0;display:flex;flex-direction:column;gap:4px" },
+        h("div", {}, h("b", { text: r.titulo }), " ", h("span", { class: "status " + (r.vendasAbertas ? "pendente" : r.status === "sorteada" ? "pago" : ""), text: statusTxt(r) })),
+        h("div", { class: "meta num", text: `${brl(r.preco)} por bilhete${r.minimo > 1 ? ` (mín. ${r.minimo})` : ""} · ${r.extracao || "extração a definir"} · ${fmt(r.pagos)} pagos de ${fmt(r.total)} · ${fmt(r.ocupados - r.pagos)} reservados` }),
+        h("div", { class: "meta num", text: `Recebido ${brl(r.recebido)} · aguardando ${brl(r.aReceber)} · sorteio ${r.dataSorteio ? dt(r.dataSorteio) : "sem data"}` }),
+        r.numeroSorteado != null ? h("div", { class: "ok", text: `Sorteado: nº ${numFmt(r.inicio ?? 1, r.total)(r.numeroSorteado)} · ${r.ganhadorCompleto || ""}` }) : null),
+      h("div", { class: "acts" },
+        h("button", { class: "btn sm", type: "button", onclick: () => { ABA = "pedidos"; FILTRO.rifa = String(r.id); painel(); }, text: "Pedidos" }),
+        h("button", { class: "btn sm", type: "button", onclick: () => rifaModal(r), text: "Editar" }),
+        h("button", { class: "btn sm", type: "button", onclick: () => sorteioModal(r), text: "Sorteio" }),
+        r.status === "ativa" ? confirmBtn("Encerrar vendas", "Encerrar mesmo?", () => salvarStatus(r, "encerrada"))
+          : r.status === "encerrada" || r.status === "oculta" ? h("button", { class: "btn sm", type: "button", onclick: () => salvarStatus(r, "ativa"), text: "Reabrir vendas" }) : null,
+        r.status !== "oculta" ? confirmBtn("Ocultar", "Ocultar do site?", () => salvarStatus(r, "oculta")) : null)));
+  }
+  box.append(list);
+}
+async function salvarStatus(r, status) { await api("admin/rifas/" + r.id, { method: "PUT", body: JSON.stringify({ status }) }); toast("Rifa atualizada."); painel(); }
+
+function rifaModal(r) {
+  const toLocal = iso => { if (!iso) return ""; const d = new Date(iso); return new Date(d - d.getTimezoneOffset() * 6e4).toISOString().slice(0, 16); };
+  let imagem = r?.imagem ? ((/\/imagem\/(.+)$/.exec(r.imagem) || [])[1] || r.imagem) : null;
+  openModal(m => {
+    const err = h("div", { class: "err", role: "alert" });
+    const prev = h("div", { class: "thumb", style: "width:96px;height:96px" }, r?.imagem ? h("img", { src: r.imagem, alt: "" }) : h("span", { class: "ph", style: "font-size:1rem", text: "Nº" }));
+    const file = h("input", { id: "rImg", type: "file", accept: "image/jpeg,image/png,image/webp" });
+    file.addEventListener("change", async () => {
+      const f = file.files[0]; if (!f) return;
+      if (f.size > 4 * 1024 * 1024) { err.textContent = "A imagem deve ter até 4 MB."; return; }
+      err.textContent = "Enviando foto…";
+      try {
+        const res = await fetch(API + "admin/imagem", { method: "POST", headers: { "content-type": f.type, "x-admin-token": TOKEN }, body: f });
+        const d = await res.json(); if (!res.ok) throw new Error(d.erro || "Falha no envio.");
+        imagem = d.imagem; prev.replaceChildren(h("img", { src: API + "imagem/" + imagem, alt: "" })); err.textContent = "";
+      } catch (e) { err.textContent = e.message; }
+    });
+    const totalAtual = r?.total || 10000;
+    const qtdSel = h("select", { id: "rTotal" }, [...new Set([...QTDS, totalAtual])].sort((a, b) => a - b).map(n => h("option", { value: String(n), text: fmt(n), selected: n === totalAtual || null })));
+    const iniSel = h("select", { id: "rIni" }, h("option", { value: "0", text: "0 (ex.: 0000)", selected: (r?.inicio ?? 0) === 0 || null }), h("option", { value: "1", text: "1", selected: r?.inicio === 1 || null }));
+    const dica = h("p", { class: "meta", style: "margin-top:-6px" });
+    const atualizaDica = () => { const t = +qtdSel.value, i = +iniSel.value, f = numFmt(i, t); dica.textContent = `Numeração: ${f(i)} a ${f(i + t - 1)}`; };
+    qtdSel.onchange = atualizaDica; iniSel.onchange = atualizaDica; atualizaDica();
+    const ext = r?.extracao || "Live no Instagram";
+    const extSel = h("select", { id: "rExt" }, [...new Set([...EXTRACOES, ext])].map(x => h("option", { value: x, text: x, selected: x === ext || null })));
+    const telIn = h("input", { id: "rTel", inputmode: "tel", placeholder: "(67) 99999-9999", value: r?.telefone ? maskPhone(r.telefone) : "", oninput: e => e.target.value = maskPhone(e.target.value) });
+    if (!r) api("admin/config").then(c => { if (!telIn.value && c.whatsapp) telIn.value = maskPhone(c.whatsapp); }).catch(() => {});
+    const form = h("form", { class: "stack" },
+      h("label", { class: "f" }, "Nome do sorteio", h("input", { id: "rTitulo", required: true, value: r?.titulo || "", placeholder: "Ex.: iPhone 17 Pro Max" })),
+      h("label", { class: "f" }, "Descrição", h("textarea", { id: "rDesc", rows: "4", placeholder: "Detalhes do prêmio e regras do sorteio" }, r?.descricao || "")),
+      h("div", { class: "row" },
+        h("label", { class: "f" }, "Quantidade de bilhetes", qtdSel),
+        h("label", { class: "f" }, "Numeração começa em", iniSel)),
+      dica,
+      h("div", { class: "row" },
+        h("label", { class: "f" }, "Valor de cada bilhete (R$)", h("input", { id: "rPreco", required: true, inputmode: "decimal", value: r ? r.preco.toFixed(2).replace(".", ",") : "", placeholder: "0,90" })),
+        h("label", { class: "f" }, "Compra mínima (bilhetes)", h("input", { id: "rMin", type: "number", min: "1", max: "1000", value: String(r?.minimo || 1) }))),
+      h("div", { class: "row" },
+        h("label", { class: "f" }, "Por onde será a extração", extSel),
+        h("label", { class: "f" }, "Telefone de suporte", telIn)),
+      h("p", { class: "meta", style: "margin-top:-6px", text: "WhatsApp ou telefone em que os participantes vão falar com você para tirar dúvidas." }),
+      h("label", { class: "f" }, "Data e hora do sorteio", h("input", { id: "rData", type: "datetime-local", value: toLocal(r?.dataSorteio) })),
+      h("div", { style: "display:flex;gap:12px;align-items:center" }, prev, h("label", { class: "f", style: "flex:1;min-width:0" }, "Foto do produto", file)),
+      err,
+      h("div", { class: "row end" }, h("button", { class: "btn", type: "button", onclick: closeModal, text: "Cancelar" }), h("button", { class: "btn primary", type: "submit", id: "rSave", text: r ? "Salvar" : "Criar rifa" })));
+    form.addEventListener("submit", async e => {
+      e.preventDefault(); $("rSave").disabled = true; err.textContent = "";
+      const body = { titulo: $("rTitulo").value, descricao: $("rDesc").value, preco: $("rPreco").value.replace(/\./g, "").replace(",", "."), total: $("rTotal").value, inicio: Number($("rIni").value), minimo: Number($("rMin").value) || 1, extracao: $("rExt").value, telefone: $("rTel").value, dataSorteio: $("rData").value ? new Date($("rData").value).toISOString() : null, imagem };
+      try {
+        if (r) await api("admin/rifas/" + r.id, { method: "PUT", body: JSON.stringify(body) });
+        else await api("admin/rifas", { method: "POST", body: JSON.stringify(body) });
+        closeModal(); toast(r ? "Rifa salva." : "Rifa criada."); painel();
+      } catch (ex) { err.textContent = ex.message; $("rSave").disabled = false; }
+    });
+    m.append(h("div", {}, h("div", { class: "eyebrow", text: r ? "Editar rifa" : "Nova rifa" }), h("h2", { text: r ? r.titulo : "Cadastrar produto" })), form);
+  });
+}
+
+function sorteioModal(r) {
+  openModal(m => {
+    const nf = numFmt(r.inicio ?? 1, r.total), ini = r.inicio ?? 1;
+    const roll = h("div", { class: "roll", text: r.numeroSorteado != null ? nf(r.numeroSorteado) : "----" });
+    const res = h("div", { role: "status" });
+    const manual = h("input", { id: "sNum", type: "number", min: String(ini), max: String(ini + r.total - 1), placeholder: "Nº", style: "width:110px" });
+    async function rodar(numero) {
+      res.textContent = ""; let girar;
+      if (numero == null && !matchMedia("(prefers-reduced-motion: reduce)").matches) girar = setInterval(() => roll.textContent = nf(ini + Math.floor(Math.random() * r.total)), 60);
+      try {
+        const g = await api(`admin/rifas/${r.id}/sortear`, { method: "POST", body: JSON.stringify({ numero }) });
+        if (girar) await new Promise(ok => setTimeout(ok, 1800));
+        clearInterval(girar); roll.textContent = nf(g.numero);
+        res.className = "ok"; res.textContent = `Ganhador: ${g.nome}${g.cidade ? " · " + g.cidade : ""}. O resultado já aparece no site.`;
+      } catch (e) { clearInterval(girar); roll.textContent = r.numeroSorteado != null ? nf(r.numeroSorteado) : "----"; res.className = "err"; res.textContent = e.message; }
+    }
+    m.append(h("div", {}, h("div", { class: "eyebrow", text: "Sorteio" }), h("h2", { text: r.titulo })),
+      h("p", { class: "muted", text: `Sorteia entre os ${fmt(r.pagos)} números pagos. Você também pode informar um número vindo de um sorteio externo, como a Loteria Federal.` }),
+      roll, res,
+      h("div", { class: "row", style: "justify-content:center" },
+        h("div", { style: "flex:0 0 auto" }, confirmBtn(r.numeroSorteado != null ? "Sortear de novo" : "Sortear agora", "Confirmar sorteio", () => rodar(null), "primary"))),
+      h("form", { class: "field", style: "align-self:center", onsubmit: e => { e.preventDefault(); if (manual.value !== "") rodar(Number(manual.value)); } }, manual, h("button", { class: "btn sm", type: "submit", text: "Usar este número" })),
+      r.numeroSorteado != null ? h("div", { class: "row", style: "justify-content:center" }, h("div", { style: "flex:0 0 auto" }, confirmBtn("Desfazer resultado", "Desfazer mesmo?", async () => { await api(`admin/rifas/${r.id}/desfazer-sorteio`, { method: "POST" }); closeModal(); painel(); }))) : null,
+      h("div", { class: "row end" }, h("button", { class: "btn", type: "button", onclick: () => { closeModal(); painel(); }, text: "Fechar" })));
+  });
+}
+
+/* ---------- aba pedidos ---------- */
+const FILTRO = { rifa: "", status: "pendente", busca: "" };
+let ULTIMOS = [];
+async function abaPedidos(box) {
+  if (!RIFAS.length) { try { RIFAS = await api("admin/resumo"); } catch {} }
+  const selR = h("select", { id: "fRifa", "aria-label": "Rifa" }, h("option", { value: "", text: "Todas as rifas" }), RIFAS.map(r => h("option", { value: String(r.id), text: r.titulo, selected: FILTRO.rifa === String(r.id) || null })));
+  const selS = h("select", { id: "fStatus", "aria-label": "Situação" }, [["pendente", "Aguardando Pix"], ["pago", "Pagos"], ["expirado", "Expirados"], ["cancelado", "Cancelados"], ["", "Todos"]].map(([v, l]) => h("option", { value: v, text: l, selected: FILTRO.status === v || null })));
+  const busca = h("input", { id: "fBusca", placeholder: "Nome, CPF, WhatsApp, código ou número", value: FILTRO.busca, style: "flex:1 1 220px;min-width:0" });
+  const list = h("div", { class: "olist" });
+  const resumo = h("div", { class: "meta num" });
+  let deb;
+  let vistos = null;
+  const carregar = async (silencioso) => {
+    FILTRO.rifa = selR.value; FILTRO.status = selS.value; FILTRO.busca = busca.value.trim();
+    const qs = new URLSearchParams(Object.entries(FILTRO).filter(([, v]) => v));
+    if (!silencioso) list.replaceChildren(h("p", { class: "muted", text: "Carregando…" }));
+    try { ULTIMOS = await api("admin/pedidos?" + qs); } catch (e) { return list.replaceChildren(h("p", { class: "err", text: e.message })); }
+    resumo.textContent = `${fmt(ULTIMOS.length)} pedidos · ${fmt(ULTIMOS.reduce((a, p) => a + p.quantidade, 0))} números · ${brl(ULTIMOS.reduce((a, p) => a + p.valor, 0))}`;
+    list.replaceChildren();
+    if (!ULTIMOS.length) list.append(h("div", { class: "empty", text: "Nenhum pedido neste filtro." }));
+    const ant = silencioso ? vistos : null; vistos = new Set(ULTIMOS.map(p => p.id));
+    for (const p of ULTIMOS) {
+      const wa = waLink(p.whatsapp, `Olá, ${p.nome.split(" ")[0]}! Sobre seu pedido ${p.codigo} na rifa ${p.rifaTitulo}: `);
+      list.append(h("div", { class: "order" + (ant && !ant.has(p.id) ? " novo" : "") },
+        h("div", { style: "min-width:0;display:flex;flex-direction:column;gap:6px" },
+          h("div", {}, h("b", { text: p.nome }), " ", h("span", { class: "status " + p.status, text: p.status }), " ", h("span", { class: "meta num", text: p.codigo })),
+          h("div", { class: "meta" }, `${p.rifaTitulo} · ${fmt(p.quantidade)} números · `, h("b", { class: "num", text: brl(p.valor) }), ` · ${fone(p.whatsapp)}`),
+          h("div", { class: "meta num", text: [p.cpf ? "CPF " + cpfFmt(p.cpf) : "", p.cep ? `CEP ${p.cep.slice(0, 5)}-${p.cep.slice(5)}, nº ${p.numeroCasa}` : "", p.cidade].filter(Boolean).join(" · ") }),
+          h("div", { class: "meta", text: `Pedido ${dt(p.criadoEm)}` + (p.status === "pendente" ? ` · expira ${dt(p.expiraEm)}` : p.pagoEm ? ` · pago ${dt(p.pagoEm)}` : "") + (p.por ? ` · ${p.status === "cancelado" ? "cancelado" : "confirmado"} por ${p.por}` : "") }),
+          h("details", {}, h("summary", { class: "meta", style: "cursor:pointer", text: "Ver números" }), h("div", { class: "chips", style: "margin-top:6px" }, p.numeros.map(n => h("span", { class: "chip", text: nfRifa(p.rifaId)(n) }))))),
+        h("div", { class: "acts", style: "flex-direction:column;align-items:stretch" },
+          p.status !== "pago" && p.status !== "cancelado" ? confirmBtn("Confirmar Pix", "Recebeu? Confirmar", async () => { await api(`admin/pedidos/${p.id}/confirmar`, { method: "POST" }); toast("Pagamento confirmado."); carregar(); }, "primary") : null,
+          p.status === "expirado" || p.status === "cancelado" ? null : confirmBtn("Cancelar pedido", "Liberar os números?", async () => { await api(`admin/pedidos/${p.id}/cancelar`, { method: "POST" }); toast("Pedido cancelado e números liberados."); carregar(); }),
+          wa ? h("a", { class: "btn sm", href: wa, target: "_blank", rel: "noopener", text: "WhatsApp" }) : null)));
+    }
+  };
+  REFRESH = () => { if (ABA === "pedidos") carregar(true); };
+  selR.onchange = () => carregar(); selS.onchange = () => carregar();
+  busca.oninput = () => { clearTimeout(deb); deb = setTimeout(carregar, 350); };
+  const csv = () => {
+    const linhas = [["codigo", "rifa", "nome", "cpf", "whatsapp", "cep", "numero_casa", "cidade", "quantidade", "valor", "status", "criado_em", "pago_em", "confirmado_por", "numeros"]]
+      .concat(ULTIMOS.map(p => [p.codigo, p.rifaTitulo, p.nome, cpfFmt(p.cpf), p.whatsapp, p.cep, p.numeroCasa, p.cidade, p.quantidade, p.valor.toFixed(2).replace(".", ","), p.status, p.criadoEm, p.pagoEm || "", p.por || "", p.numeros.join(" ")]));
+    const txt = "﻿" + linhas.map(l => l.map(v => `"${String(v ?? "").replace(/"/g, '""')}"`).join(";")).join("\n");
+    const a = h("a", { href: URL.createObjectURL(new Blob([txt], { type: "text/csv;charset=utf-8" })), download: "pedidos.csv" }); document.body.append(a); a.click(); a.remove();
+  };
+  box.append(h("div", { class: "filters" }, selR, selS, busca, h("button", { class: "btn sm", type: "button", onclick: csv, text: "Exportar planilha" })), resumo, list);
+  carregar();
+}
+
+/* ---------- aba configurações ---------- */
+async function abaConfig(box) {
+  REFRESH = null;
+  let c; try { c = await api("admin/config"); } catch (e) { return box.append(h("p", { class: "err", text: e.message })); }
+  const msg = h("div", { role: "status" });
+  const campo = (id, label, val, attrs = {}) => h("label", { class: "f" }, label, h("input", { id, value: val ?? "", ...attrs }));
+  const form = h("form", { class: "stack" },
+    h("h2", { text: "Site" }),
+    campo("cNome", "Nome do site", c.nomeSite),
+    campo("cChamada", "Frase da página inicial", c.chamada),
+    h("label", { class: "f" }, "Regras e avisos (aparecem no rodapé)", h("textarea", { id: "cRegras", rows: "4" }, c.regras || "")),
+    h("h2", { text: "Pagamento" }),
+    h("p", { class: "muted", text: "Com a chave Pix preenchida, cada pedido mostra um QR Code com o valor exato. A confirmação é feita por você na aba Pedidos até a confirmação automática ser ligada." }),
+    h("div", { class: "row" }, campo("cPix", "Chave Pix (CNPJ, e-mail, telefone ou aleatória)", c.pixChave, { placeholder: "Deixe vazio por enquanto" }), campo("cPixNome", "Nome de quem recebe", c.pixNome)),
+    h("div", { class: "row" }, campo("cPixCidade", "Cidade de quem recebe", c.pixCidade), campo("cWpp", "WhatsApp do organizador", c.whatsapp, { inputmode: "tel" })),
+    h("h2", { text: "Regras de compra" }),
+    h("div", { class: "row" }, campo("cMin", "Minutos para pagar a reserva", c.minutosReserva, { type: "number", min: "5", max: "1440" }), campo("cMax", "Máximo de números por compra", c.maxPorPedido, { type: "number", min: "1", max: "10000" })),
+    msg, h("div", { class: "row end" }, h("button", { class: "btn primary", type: "submit", id: "cSave", text: "Salvar configurações" })));
+  form.addEventListener("submit", async e => {
+    e.preventDefault(); $("cSave").disabled = true;
+    try {
+      await api("admin/config", { method: "PUT", body: JSON.stringify({ nomeSite: $("cNome").value, chamada: $("cChamada").value, regras: $("cRegras").value, pixChave: $("cPix").value, pixNome: $("cPixNome").value, pixCidade: $("cPixCidade").value, whatsapp: $("cWpp").value.replace(/\D/g, ""), minutosReserva: $("cMin").value, maxPorPedido: $("cMax").value }) });
+      msg.className = "ok"; msg.textContent = "Configurações salvas.";
+    } catch (ex) { msg.className = "err"; msg.textContent = ex.message; }
+    $("cSave").disabled = false;
+  });
+  box.append(h("section", { class: "panel" }, form));
+}
+
+if (TOKEN) painel(); else login();
+})();
+</script>
+</body>
+</html>
