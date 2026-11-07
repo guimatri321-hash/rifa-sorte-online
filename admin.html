@@ -106,6 +106,23 @@ async function verComprovante(p) {
     if (janela) janela.location = url; else location.href = url;
   } catch (e) { if (janela) janela.close(); toast(e.message); }
 }
+const COMP_CACHE = new Map();
+function miniComprovante(p) {
+  const box = h("div", { class: "comp-mini", title: "Abrir comprovante", onclick: () => verComprovante(p) }, h("span", { class: "meta", text: "Carregando comprovante…" }));
+  (async () => {
+    try {
+      let it = COMP_CACHE.get(p.id + "|" + p.comprovanteEm);
+      if (!it) {
+        const r = await fetch(API + `admin/pedidos/${p.id}/comprovante`, { headers: { "x-admin-token": TOKEN } });
+        if (!r.ok) throw 0;
+        const b = await r.blob(); it = { url: URL.createObjectURL(b), tipo: b.type };
+        COMP_CACHE.set(p.id + "|" + p.comprovanteEm, it);
+      }
+      box.replaceChildren(/^image\//.test(it.tipo) ? h("img", { src: it.url, alt: "Comprovante do pedido " + p.codigo }) : h("span", { class: "btn sm", text: "📄 Abrir PDF do comprovante" }));
+    } catch { box.replaceChildren(h("span", { class: "meta", text: "Não foi possível carregar o comprovante." })); }
+  })();
+  return box;
+}
 let toastT;
 function toast(msg) { let t = $("toast"); if (!t) { t = h("div", { id: "toast", class: "toast", role: "status" }); document.body.append(t); } t.textContent = msg; t.hidden = false; clearTimeout(toastT); toastT = setTimeout(() => t.hidden = true, 3500); }
 function openModal(build) { const m = $("modal"); m.replaceChildren(); build(m); $("overlay").hidden = false; m.querySelector("input,button")?.focus(); }
@@ -330,13 +347,14 @@ async function abaPedidos(box) {
       const wa = waLink(p.whatsapp, `Olá, ${p.nome.split(" ")[0]}! Sobre seu pedido ${p.codigo} na rifa ${p.rifaTitulo}: `);
       list.append(h("div", { class: "order" + (ant && !ant.has(p.id) ? " novo" : "") },
         h("div", { style: "min-width:0;display:flex;flex-direction:column;gap:6px" },
-          h("div", {}, h("b", { text: p.nome }), " ", h("span", { class: "status " + p.status, text: p.status }), " ", p.comprovanteEm && p.status !== "pago" ? h("span", { class: "status pago", style: "background:#ecfdf3", text: "📎 comprovante" }) : null, p.status === "pago" && /^Autom/.test(p.por || "") ? h("span", { class: "status pendente", text: "⚡ automático · conferir no banco" }) : null, " ", h("span", { class: "meta num", text: p.codigo })),
+          h("div", {}, h("b", { text: p.nome }), " ", h("span", { class: "status " + p.status, text: p.status }), " ", p.comprovanteEm && p.status !== "pago" ? h("span", { class: "status pago", style: "background:#ecfdf3", text: "📎 comprovante" }) : null, " ", h("span", { class: "meta num", text: p.codigo })),
           h("div", { class: "meta" }, `${p.rifaTitulo} · ${fmt(p.quantidade)} números · `, h("b", { class: "num", text: brl(p.valor) }), ` · ${fone(p.whatsapp)}`),
           h("div", { class: "meta num", text: [p.cpf ? "CPF " + cpfFmt(p.cpf) : "", p.cep ? `CEP ${p.cep.slice(0, 5)}-${p.cep.slice(5)}, nº ${p.numeroCasa}` : "", p.cidade].filter(Boolean).join(" · ") }),
           h("div", { class: "meta", text: `Pedido ${dt(p.criadoEm)}` + (p.status === "pendente" ? ` · expira ${dt(p.expiraEm)}` : p.pagoEm ? ` · pago ${dt(p.pagoEm)}` : "") + (p.comprovanteEm ? ` · comprovante enviado ${dt(p.comprovanteEm)}` : "") + (p.por ? ` · ${p.status === "cancelado" ? "cancelado" : "confirmado"} por ${p.por}` : "") }),
+          p.comprovanteEm ? miniComprovante(p) : null,
           h("details", {}, h("summary", { class: "meta", style: "cursor:pointer", text: "Ver números" }), h("div", { class: "chips", style: "margin-top:6px" }, p.numeros.map(n => h("span", { class: "chip", text: nfRifa(p.rifaId)(n) }))))),
         h("div", { class: "acts", style: "flex-direction:column;align-items:stretch" },
-          p.comprovanteEm ? h("button", { class: "btn sm" + (p.status === "pago" && !/^Autom/.test(p.por || "") ? "" : " primary"), type: "button", onclick: () => verComprovante(p), text: "Ver comprovante" }) : null,
+          p.comprovanteEm ? h("button", { class: "btn sm", type: "button", onclick: () => verComprovante(p), text: "Abrir comprovante" }) : null,
           p.status !== "pago" && p.status !== "cancelado" ? confirmBtn("Confirmar Pix", "Recebeu? Confirmar", async () => { await api(`admin/pedidos/${p.id}/confirmar`, { method: "POST" }); toast("Pagamento confirmado."); carregar(); }, "primary") : null,
           p.status === "cancelado" ? confirmBtn("Reativar como pago", "Confirmar reativação", async () => { await api(`admin/pedidos/${p.id}/confirmar`, { method: "POST" }); toast("Pedido reativado como pago."); carregar(); }) : null,
           p.status === "expirado" || p.status === "cancelado" ? null : confirmBtn("Cancelar pedido", "Liberar os números?", async () => { await api(`admin/pedidos/${p.id}/cancelar`, { method: "POST" }); toast("Pedido cancelado e números liberados."); carregar(); }),

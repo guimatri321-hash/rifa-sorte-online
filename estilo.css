@@ -228,3 +228,5 @@ body.painel .panel,body.painel .card{background:#fff;backdrop-filter:none;-webki
 .cards.duas{grid-template-columns:repeat(auto-fit,minmax(260px,1fr))}
 @media(min-width:640px){.cards.duas{grid-template-columns:repeat(2,1fr)}}
 .entrada{margin-top:0}
+.comp-mini{cursor:zoom-in;align-self:flex-start;max-width:260px;border:1px solid var(--line);border-radius:12px;background:#fff;padding:6px;overflow:hidden}
+.comp-mini img{display:block;max-width:100%;max-height:320px;border-radius:8px;object-fit:contain}
