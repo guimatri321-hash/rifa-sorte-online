@@ -515,7 +515,13 @@ Deno.serve(async (req: Request) => {
       if (n >= 5) return erro("Você já enviou comprovantes para este pedido. Aguarde a confirmação.", 429);
       await q("INSERT INTO comprovantes (pedido_id, tipo, dados) VALUES ($1, $2, decode($3, 'base64'))", [p.id, tipo, Buffer.from(dados).toString("base64")]);
       await q("UPDATE pedidos SET comprovante_em = now() WHERE id = $1", [p.id]);
-      return json({ ok: true }, 201);
+      // Comprovante enviado = pagamento confirmado automaticamente (o organizador confere depois no painel).
+      let confirmado = p.status === "pago";
+      if (!confirmado) {
+        try { await confirmarPagamento(p.id, "Automático (comprovante)"); confirmado = true; }
+        catch (e) { if (!(e instanceof HttpErro)) throw e; }
+      }
+      return json({ ok: true, confirmado }, 201);
     }
 
     if (m === "GET" && partes[0] === "meus") {
