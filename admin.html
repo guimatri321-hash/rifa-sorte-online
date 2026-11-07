@@ -97,6 +97,15 @@ async function api(path, opts = {}) {
   if (!r.ok) { const e = new Error(data.erro || "Não foi possível falar com o servidor."); e.data = data; throw e; }
   return data;
 }
+async function verComprovante(p) {
+  const janela = window.open("", "_blank");
+  try {
+    const r = await fetch(API + `admin/pedidos/${p.id}/comprovante`, { headers: { "x-admin-token": TOKEN } });
+    if (!r.ok) { const d = await r.json().catch(() => ({})); throw new Error(d.erro || "Não foi possível abrir o comprovante."); }
+    const url = URL.createObjectURL(await r.blob());
+    if (janela) janela.location = url; else location.href = url;
+  } catch (e) { if (janela) janela.close(); toast(e.message); }
+}
 let toastT;
 function toast(msg) { let t = $("toast"); if (!t) { t = h("div", { id: "toast", class: "toast", role: "status" }); document.body.append(t); } t.textContent = msg; t.hidden = false; clearTimeout(toastT); toastT = setTimeout(() => t.hidden = true, 3500); }
 function openModal(build) { const m = $("modal"); m.replaceChildren(); build(m); $("overlay").hidden = false; m.querySelector("input,button")?.focus(); }
@@ -321,12 +330,13 @@ async function abaPedidos(box) {
       const wa = waLink(p.whatsapp, `Olá, ${p.nome.split(" ")[0]}! Sobre seu pedido ${p.codigo} na rifa ${p.rifaTitulo}: `);
       list.append(h("div", { class: "order" + (ant && !ant.has(p.id) ? " novo" : "") },
         h("div", { style: "min-width:0;display:flex;flex-direction:column;gap:6px" },
-          h("div", {}, h("b", { text: p.nome }), " ", h("span", { class: "status " + p.status, text: p.status }), " ", h("span", { class: "meta num", text: p.codigo })),
+          h("div", {}, h("b", { text: p.nome }), " ", h("span", { class: "status " + p.status, text: p.status }), " ", p.comprovanteEm && p.status !== "pago" ? h("span", { class: "status pago", style: "background:#ecfdf3", text: "📎 comprovante" }) : null, " ", h("span", { class: "meta num", text: p.codigo })),
           h("div", { class: "meta" }, `${p.rifaTitulo} · ${fmt(p.quantidade)} números · `, h("b", { class: "num", text: brl(p.valor) }), ` · ${fone(p.whatsapp)}`),
           h("div", { class: "meta num", text: [p.cpf ? "CPF " + cpfFmt(p.cpf) : "", p.cep ? `CEP ${p.cep.slice(0, 5)}-${p.cep.slice(5)}, nº ${p.numeroCasa}` : "", p.cidade].filter(Boolean).join(" · ") }),
-          h("div", { class: "meta", text: `Pedido ${dt(p.criadoEm)}` + (p.status === "pendente" ? ` · expira ${dt(p.expiraEm)}` : p.pagoEm ? ` · pago ${dt(p.pagoEm)}` : "") + (p.por ? ` · ${p.status === "cancelado" ? "cancelado" : "confirmado"} por ${p.por}` : "") }),
+          h("div", { class: "meta", text: `Pedido ${dt(p.criadoEm)}` + (p.status === "pendente" ? ` · expira ${dt(p.expiraEm)}` : p.pagoEm ? ` · pago ${dt(p.pagoEm)}` : "") + (p.comprovanteEm ? ` · comprovante enviado ${dt(p.comprovanteEm)}` : "") + (p.por ? ` · ${p.status === "cancelado" ? "cancelado" : "confirmado"} por ${p.por}` : "") }),
           h("details", {}, h("summary", { class: "meta", style: "cursor:pointer", text: "Ver números" }), h("div", { class: "chips", style: "margin-top:6px" }, p.numeros.map(n => h("span", { class: "chip", text: nfRifa(p.rifaId)(n) }))))),
         h("div", { class: "acts", style: "flex-direction:column;align-items:stretch" },
+          p.comprovanteEm ? h("button", { class: "btn sm" + (p.status === "pago" ? "" : " primary"), type: "button", onclick: () => verComprovante(p), text: "Ver comprovante" }) : null,
           p.status !== "pago" && p.status !== "cancelado" ? confirmBtn("Confirmar Pix", "Recebeu? Confirmar", async () => { await api(`admin/pedidos/${p.id}/confirmar`, { method: "POST" }); toast("Pagamento confirmado."); carregar(); }, "primary") : null,
           p.status === "cancelado" ? confirmBtn("Reativar como pago", "Confirmar reativação", async () => { await api(`admin/pedidos/${p.id}/confirmar`, { method: "POST" }); toast("Pedido reativado como pago."); carregar(); }) : null,
           p.status === "expirado" || p.status === "cancelado" ? null : confirmBtn("Cancelar pedido", "Liberar os números?", async () => { await api(`admin/pedidos/${p.id}/cancelar`, { method: "POST" }); toast("Pedido cancelado e números liberados."); carregar(); }),

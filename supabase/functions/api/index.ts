@@ -143,7 +143,7 @@ function gerarPix(chave: string, nome: string, cidade: string, valorCentavos: nu
 const SQL_EXPIRAR = `
   WITH exp AS (
     UPDATE pedidos SET status = 'expirado'
-    WHERE status = 'pendente' AND expira_em < now()
+    WHERE status = 'pendente' AND expira_em < now() AND comprovante_em IS NULL
     RETURNING id
   )
   DELETE FROM numeros WHERE pedido_id IN (SELECT id FROM exp)`;
@@ -259,6 +259,7 @@ function pedidoPublico(p: any, cfg: Configuracao) {
     criadoEm: p.criado_em,
     pix: p.status === "pendente" && p.pix_copia_cola ? { copiaCola: p.pix_copia_cola, nome: cfg.pixNome } : null,
     whatsappOrganizador: p.telefone_suporte || cfg.whatsapp,
+    comprovanteEnviado: !!p.comprovante_em,
   };
 }
 
@@ -501,6 +502,22 @@ Deno.serve(async (req: Request) => {
       return json(pedidoPublico(p, await lerConfig()));
     }
 
+    if (m === "POST" && partes[0] === "pedidos" && partes[1] && partes[2] === "comprovante") {
+      const tipo = (req.headers.get("content-type") || "").split(";")[0].trim();
+      if (!/^(image\/(jpeg|png|webp|heic|heif)|application\/pdf)$/.test(tipo)) return erro("Envie uma foto ou print (JPG/PNG) ou um PDF do comprovante.");
+      const dados = await req.arrayBuffer();
+      if (!dados.byteLength) return erro("Arquivo vazio.");
+      if (dados.byteLength > 6 * 1024 * 1024) return erro("O arquivo deve ter até 6 MB.");
+      const p = (await q("SELECT id, status FROM pedidos WHERE codigo = $1", [partes[1].toUpperCase()]))[0];
+      if (!p) return erro("Pedido não encontrado.", 404);
+      if (p.status === "cancelado") return erro("Este pedido foi cancelado. Fale com o organizador.", 409);
+      const n = Number((await q("SELECT count(*) AS n FROM comprovantes WHERE pedido_id = $1", [p.id]))[0].n);
+      if (n >= 5) return erro("Você já enviou comprovantes para este pedido. Aguarde a confirmação.", 429);
+      await q("INSERT INTO comprovantes (pedido_id, tipo, dados) VALUES ($1, $2, decode($3, 'base64'))", [p.id, tipo, Buffer.from(dados).toString("base64")]);
+      await q("UPDATE pedidos SET comprovante_em = now() WHERE id = $1", [p.id]);
+      return json({ ok: true }, 201);
+    }
+
     if (m === "GET" && partes[0] === "meus") {
       const w = soDigitos(url.searchParams.get("whatsapp")).slice(-11);
       if (w.length < 10) return erro("Digite o WhatsApp com DDD.");
@@ -610,7 +627,7 @@ Deno.serve(async (req: Request) => {
         return json({ imagem: chave }, 201);
       }
 
-      if (m === "GET" && partes[1] === "pedidos") {
+      if (m === "GET" && partes[1] === "pedidos" && !partes[2]) {
         const filtros: string[] = [], params: unknown[] = [];
         const rifa = url.searchParams.get("rifa"), status = url.searchParams.get("status"), busca = texto(url.searchParams.get("busca"), 60);
         if (rifa) { params.push(Number(rifa)); filtros.push(`p.rifa_id = $${params.length}`); }
@@ -627,16 +644,22 @@ Deno.serve(async (req: Request) => {
         const lista = await q(
           `SELECT p.*, r.titulo FROM pedidos p JOIN rifas r ON r.id = p.rifa_id
            ${filtros.length ? "WHERE " + filtros.join(" AND ") : ""}
-           ORDER BY p.criado_em DESC LIMIT 1000`,
+           ORDER BY (p.comprovante_em IS NOT NULL AND p.status = 'pendente') DESC, p.criado_em DESC LIMIT 1000`,
           params
         );
         return json(
           lista.map(p => ({
             id: p.id, codigo: p.codigo, rifaId: p.rifa_id, rifaTitulo: p.titulo, nome: p.nome, whatsapp: p.whatsapp,
             cidade: p.cidade, cpf: p.cpf, cep: p.cep, numeroCasa: p.numero_casa, numeros: p.numeros, quantidade: p.quantidade, valor: p.valor_centavos / 100,
-            status: p.status, criadoEm: p.criado_em, expiraEm: p.expira_em, pagoEm: p.pago_em, por: p.confirmado_por,
+            status: p.status, criadoEm: p.criado_em, expiraEm: p.expira_em, pagoEm: p.pago_em, por: p.confirmado_por, comprovanteEm: p.comprovante_em,
           }))
         );
+      }
+
+      if (m === "GET" && partes[1] === "pedidos" && partes[3] === "comprovante") {
+        const r = (await q("SELECT tipo, encode(dados, 'base64') AS b64 FROM comprovantes WHERE pedido_id = $1 ORDER BY id DESC LIMIT 1", [Number(partes[2])]))[0];
+        if (!r) return erro("Nenhum comprovante enviado.", 404);
+        return new Response(Buffer.from(r.b64.replace(/\s/g, ""), "base64"), { headers: { ...CORS, "content-type": r.tipo, "cache-control": "no-store" } });
       }
 
       if (m === "POST" && partes[1] === "pedidos" && partes[3] === "confirmar") {

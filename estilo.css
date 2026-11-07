@@ -43,6 +43,7 @@ a{color:var(--accent)}
 .btn:disabled{opacity:.5;cursor:not-allowed}
 .note{border:1px dashed var(--line);border-radius:var(--r);padding:12px 14px;color:var(--muted);background:var(--glass)}
 .note.warn{border-color:var(--hold);color:var(--ink);background:var(--hold-bg)}
+.note.ok{border:1px solid #9be3b5;color:#14532d;background:#ecfdf3}
 .err{color:var(--stamp);font-size:.9rem;font-weight:600}
 .ok{color:#0E9F6E;font-weight:700}
 .row{display:flex;gap:10px;flex-wrap:wrap}

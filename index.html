@@ -411,6 +411,18 @@ async function viewRifa(id) {
 }
 
 /* ---------------- pedido / pagamento ---------------- */
+// Fotos grandes do celular são reduzidas antes do envio (máx. 1800 px, JPEG).
+async function prepararArquivo(f) {
+  if (!/^image\/(jpeg|png|webp)$/.test(f.type) || f.size < 1.2e6) return f;
+  try {
+    const img = await createImageBitmap(f);
+    const k = Math.min(1, 1800 / Math.max(img.width, img.height));
+    const c = document.createElement("canvas"); c.width = Math.round(img.width * k); c.height = Math.round(img.height * k);
+    c.getContext("2d").drawImage(img, 0, 0, c.width, c.height);
+    const b = await new Promise(res => c.toBlob(res, "image/jpeg", 0.85));
+    return b && b.size < f.size ? new File([b], "comprovante.jpg", { type: "image/jpeg" }) : f;
+  } catch { return f; }
+}
 async function viewPedido(codigo) {
   setView(h("div", { class: "empty", text: "Carregando seu pedido…" }));
   let lastStatus = null;
@@ -418,17 +430,41 @@ async function viewPedido(codigo) {
     let p;
     try { p = await api("pedidos/" + codigo); } catch (e) { return setView(h("div", { class: "empty", text: e.message })); }
     if (p.status === lastStatus && p.status !== "pendente") return;
-    if (lastStatus === "pendente" && p.status === "pendente") return updateTimer(p);
+    if (lastStatus === "pendente" && p.status === "pendente" && !!p.comprovanteEnviado === !!atual?.comprovanteEnviado) { atual = p; return updateTimer(p); }
     lastStatus = p.status;
     render(p);
   }
-  let timerEl;
+  let timerEl, atual = null;
   function updateTimer(p) {
     if (!timerEl) return;
+    if (p.comprovanteEnviado) { timerEl.textContent = "em análise"; timerEl.style.fontSize = "1.1rem"; return; }
     const s = Math.max(0, Math.floor((new Date(p.expiraEm) - Date.now()) / 1000));
     timerEl.textContent = `${String(Math.floor(s / 60)).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`;
   }
+  function blocoComprovante(p) {
+    const box = h("div", { class: "comprovante", style: "display:flex;flex-direction:column;gap:10px" });
+    const err = h("div", { class: "err", role: "alert" });
+    const input = h("input", { type: "file", accept: "image/*,application/pdf", hidden: true });
+    const btn = h("button", { class: p.comprovanteEnviado ? "btn" : "btn primary big", type: "button", text: p.comprovanteEnviado ? "Enviar outro comprovante" : "✅ Já paguei – enviar comprovante" });
+    btn.onclick = () => input.click();
+    input.onchange = async () => {
+      const f = input.files[0]; input.value = ""; if (!f) return;
+      err.textContent = ""; btn.disabled = true; btn.textContent = "Enviando comprovante…";
+      try {
+        const arq = await prepararArquivo(f);
+        const r = await fetch(API + "pedidos/" + encodeURIComponent(p.codigo) + "/comprovante", { method: "POST", headers: { "content-type": arq.type }, body: arq });
+        const d = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(d.erro || "Não foi possível enviar. Tente de novo.");
+        lastStatus = null; await load();
+      } catch (e) { err.textContent = e.message; btn.disabled = false; btn.textContent = "✅ Já paguei – enviar comprovante"; }
+    };
+    if (p.comprovanteEnviado) box.append(h("div", { class: "note ok", style: "font-weight:600", text: "📨 Comprovante recebido! Agora é só aguardar: assim que o organizador conferir, esta página muda para Pagamento confirmado." }));
+    else box.append(h("p", { class: "muted", style: "font-size:.9rem", text: "Depois de pagar, toque no botão abaixo e envie a foto ou print do comprovante." }));
+    box.append(h("div", {}, btn), input, err);
+    return box;
+  }
   function render(p) {
+    atual = p; clearTimers(); timers.push(setInterval(() => { if (!document.hidden) load(); }, 6000));
     const nf = numFmt(p.inicio ?? 1, (p.inicio ?? 1) + (p.total || 0) - 1);
     const titulo = { pendente: "Pague para garantir seus números", pago: "Pagamento confirmado!", expirado: "O prazo de pagamento acabou", cancelado: "Pedido cancelado" }[p.status];
     const blocks = [];
@@ -457,24 +493,23 @@ async function viewPedido(codigo) {
             h("p", { text: "Abra o app do seu banco, escolha Pix e leia o QR Code, ou use o Pix Copia e Cola:" }),
             code, h("div", {}, copyBtn(p.pix.copiaCola, code, "Copiar código Pix")),
             p.pix.nome ? h("p", { class: "meta", text: "Recebedor: " + p.pix.nome }) : null)));
-        pay.append(h("p", { class: "muted", style: "font-size:.9rem", text: "Depois de pagar, esta página muda para Pagamento confirmado assim que o organizador confirmar. Guarde o código do pedido." }));
+    
       } else {
         pay.append(h("div", { class: "note warn", text: "O pagamento por Pix ainda está sendo configurado. Fale com o organizador pelo WhatsApp para pagar e garantir seus números." }));
       }
-      const wa = waLink(p.whatsappOrganizador, `Olá! Fiz o pedido ${p.codigo} (${p.quantidade} números, ${brl(p.valor)}) na rifa ${p.rifaTitulo}.`);
-      if (wa) pay.append(h("div", {}, h("a", { class: "btn", href: wa, target: "_blank", rel: "noopener", text: "Enviar comprovante pelo WhatsApp" })));
+      pay.append(blocoComprovante(p));
       blocks.push(pay);
       updateTimer(p);
-      timers.push(setInterval(() => updateTimer(p), 1000));
+      timers.push(setInterval(() => updateTimer(atual), 1000));
     } else if (p.status === "expirado") {
-      blocks.push(h("div", { class: "note warn" }, "Os números voltaram a ficar livres. Se você já pagou, fale com o organizador e informe o código ", h("b", { text: p.codigo }), ". ", h("a", { href: "#rifa-" + p.rifaId, text: "Fazer um novo pedido" })));
+      blocks.push(h("div", { class: "note warn" }, "Os números voltaram a ficar livres. Se você já pagou, envie o comprovante abaixo que o organizador confere. ", h("a", { href: "#rifa-" + p.rifaId, text: "Fazer um novo pedido" })));
+      blocks.push(h("section", { class: "panel" }, blocoComprovante(p)));
     } else if (p.status === "pago") {
       blocks.push(h("p", { class: "ok", text: "Seus números estão garantidos. Boa sorte no sorteio!" }));
     }
     setView(h("div", { style: "display:flex;flex-direction:column;gap:22px" }, ...blocks));
   }
   await load();
-  timers.push(setInterval(() => { if (!document.hidden) load(); }, 6000));
 }
 
 /* ---------------- meus números ---------------- */
