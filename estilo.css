@@ -223,3 +223,7 @@ body.painel .panel,body.painel .card{background:#fff;backdrop-filter:none;-webki
   .card.destaque .body{padding:18px}
 }
 @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+
+.cards.duas{grid-template-columns:repeat(auto-fit,minmax(260px,1fr))}
+@media(min-width:640px){.cards.duas{grid-template-columns:repeat(2,1fr)}}
+.entrada{margin-top:0}

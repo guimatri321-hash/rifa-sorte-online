@@ -71,6 +71,7 @@ function h(tag, attrs, ...kids) {
 }
 const API = "https://ccgnncfjqvbvxutdnmja.supabase.co/functions/v1/api/";
 // Fotos que ficam junto com o site (pasta fotos/) chegam do servidor como ".../imagem/fotos/arquivo.jpg".
+function semData(x) { if (Array.isArray(x)) x.forEach(semData); else if (x && typeof x === "object" && "dataSorteio" in x) x.dataSorteio = null; }
 function ajustarFotos(x) {
   if (Array.isArray(x)) x.forEach(ajustarFotos);
   else if (x && typeof x === "object") for (const k in x) {
@@ -82,7 +83,7 @@ function ajustarFotos(x) {
 async function api(path, opts = {}) {
   const r = await fetch(API + path, { ...opts, headers: { "content-type": "application/json", ...(opts.headers || {}) } });
   let data = {}; try { data = await r.json(); } catch {}
-  if (r.ok) ajustarFotos(data);
+  if (r.ok) { ajustarFotos(data); semData(data); }
   if (!r.ok) { const e = new Error(data.erro || "Não foi possível falar com o servidor."); e.data = data; e.status = r.status; throw e; }
   return data;
 }
@@ -199,11 +200,20 @@ function viewEntrada(voltar) {
     try { sessionStorage.removeItem("voltar"); } catch {}
     if (location.hash.slice(1) === (voltar || "")) route(); else location.hash = voltar || "";
   });
-  setView(h("section", { class: "panel entrada" },
+  const cards = h("section", { class: "cards duas", "aria-label": "Rifas" }, h("div", { class: "empty", text: "Carregando rifas…" }));
+  preencherCards(cards, (e, r) => {
+    e.preventDefault(); voltar = "rifa-" + r.id;
+    try { sessionStorage.setItem("voltar", voltar); } catch {}
+    form.scrollIntoView({ behavior: "smooth", block: "center" }); setTimeout(() => $("eNome")?.focus(), 400);
+  });
+  setView(h("div", { style: "display:flex;flex-direction:column;gap:24px" },
+    h("section", { class: "hero" }, h("div", { class: "eyebrow", text: "Rifas abertas" }),
+      h("h1", {}, "Escolha o prêmio e ", h("span", { class: "grad-text", text: "garanta seus números" }))),
+    cards,
+    h("section", { class: "panel entrada", id: "dados" },
     h("div", {}, h("div", { class: "eyebrow", text: "Bem-vindo" }), h("h1", { text: "Seus dados para participar" }),
       h("p", { class: "muted", style: "margin-top:6px", text: "Usamos esses dados para registrar seus bilhetes e entregar o prêmio se você ganhar. Eles não aparecem para outras pessoas." })),
-    form));
-  setTimeout(() => $("eNome")?.focus(), 50);
+    form)));
 }
 
 function setView(...nodes) { $("view").replaceChildren(...nodes); }
@@ -217,37 +227,39 @@ function faltam(d) {
   const dias = Math.floor(ms / 864e5); if (dias >= 1) return dias === 1 ? "falta 1 dia" : `faltam ${dias} dias`;
   const hrs = Math.floor(ms / 36e5); return hrs >= 1 ? `faltam ${hrs} h` : "últimos minutos";
 }
-async function viewHome() {
-  const cards = h("section", { class: "cards", "aria-label": "Rifas" }, h("div", { class: "empty", text: "Carregando rifas…" }));
-  setView(h("div", { style: "display:flex;flex-direction:column;gap:24px" },
-    h("section", { class: "hero" }, h("div", { class: "eyebrow", text: "Rifas abertas" }),
-      h("h1", {}, "Escolha o prêmio e ", h("span", { class: "grad-text", text: "garanta seus números" })),
-),
-    cards));
+function cardRifa(r, aoClicar) {
+  const pct = Math.min(100, r.pagos / r.total * 100);
+  const nf = numFmt(r.inicio ?? 1, (r.inicio ?? 1) + r.total - 1);
+  const quando = r.dataSorteio ? `Até ${diaMes(r.dataSorteio)}${faltam(r.dataSorteio) ? " · " + faltam(r.dataSorteio) : ""}` : "";
+  const meta = [quando, r.extracao ? "Sorteio: " + r.extracao : ""].filter(Boolean).join(" · ");
+  return h("a", { class: "card", href: "#rifa-" + r.id, onclick: aoClicar || null },
+    h("div", { class: "img" }, r.imagem ? h("img", { src: r.imagem, alt: r.titulo, loading: "lazy" }) : h("span", { class: "ph", text: "Nº" }),
+      r.numeroSorteado != null ? h("span", { class: "tag done", text: "Sorteada · nº " + nf(r.numeroSorteado) })
+        : !r.vendasAbertas ? h("span", { class: "tag done", text: "Vendas encerradas" })
+        : h("span", { class: "tag hot", text: "Vendendo" })),
+    h("div", { class: "body" },
+      h("h3", { text: r.titulo }),
+      meta ? h("div", { class: "meta", text: meta }) : null,
+      h("div", {}, h("div", { class: "bar" }, h("i", { class: "prog", style: `width:${Math.max(pct, pct > 0 ? 2 : 0)}%` })),
+        h("div", { class: "meta", style: "margin-top:5px" }, h("b", { class: "grad-text", style: "font-size:1rem", text: pctTxt(pct) }), " vendido")),
+      h("div", { class: "foot" }, h("span", { class: "price" }, brl(r.preco), h("small", { text: " por bilhete" })),
+        h("span", { class: "btn primary sm", text: r.vendasAbertas ? "Comprar números" : "Ver resultado" }))));
+}
+async function preencherCards(cards, aoClicar) {
   try {
     const rifas = await api("rifas");
     cards.replaceChildren();
     if (!rifas.length) cards.append(h("div", { class: "empty", text: "Nenhuma rifa aberta no momento. Volte em breve." }));
-    let destacou = false;
-    for (const r of rifas) {
-      const pct = Math.min(100, r.pagos / r.total * 100), destaque = !destacou && r.vendasAbertas && rifas.filter(x => x.vendasAbertas).length > 1;
-      if (destaque) destacou = true;
-      const nf = numFmt(r.inicio ?? 1, (r.inicio ?? 1) + r.total - 1);
-      const quando = r.dataSorteio ? `Até ${diaMes(r.dataSorteio)}${faltam(r.dataSorteio) ? " · " + faltam(r.dataSorteio) : ""}` : "Data do sorteio a definir";
-      cards.append(h("a", { class: "card" + (destaque ? " destaque" : ""), href: "#rifa-" + r.id },
-        h("div", { class: "img" }, r.imagem ? h("img", { src: r.imagem, alt: r.titulo, loading: "lazy" }) : h("span", { class: "ph", text: "Nº" }),
-          r.numeroSorteado != null ? h("span", { class: "tag done", text: "Sorteada · nº " + nf(r.numeroSorteado) })
-            : !r.vendasAbertas ? h("span", { class: "tag done", text: "Vendas encerradas" })
-            : h("span", { class: "tag hot", text: destaque ? "Em destaque" : "Vendendo" })),
-        h("div", { class: "body" },
-          h("h3", { text: r.titulo }),
-          h("div", { class: "meta", text: quando + (r.extracao ? " · " + r.extracao : "") }),
-          h("div", {}, h("div", { class: "bar" }, h("i", { class: "prog", style: `width:${Math.max(pct, pct > 0 ? 2 : 0)}%` })),
-            h("div", { class: "meta", style: "margin-top:5px" }, h("b", { class: "grad-text", style: "font-size:1rem", text: pctTxt(pct) }), " vendido")),
-          h("div", { class: "foot" }, h("span", { class: "price" }, brl(r.preco), h("small", { text: " por bilhete" })),
-            h("span", { class: "btn primary" + (destaque ? "" : " sm"), text: r.vendasAbertas ? "Comprar números" : "Ver resultado" })))));
-    }
+    for (const r of rifas) cards.append(cardRifa(r, aoClicar ? e => aoClicar(e, r) : null));
   } catch (e) { cards.replaceChildren(h("div", { class: "empty", text: e.message })); }
+}
+async function viewHome() {
+  const cards = h("section", { class: "cards duas", "aria-label": "Rifas" }, h("div", { class: "empty", text: "Carregando rifas…" }));
+  setView(h("div", { style: "display:flex;flex-direction:column;gap:24px" },
+    h("section", { class: "hero" }, h("div", { class: "eyebrow", text: "Rifas abertas" }),
+      h("h1", {}, "Escolha o prêmio e ", h("span", { class: "grad-text", text: "garanta seus números" }))),
+    cards));
+  preencherCards(cards);
 }
 
 /* ---------------- rifa ---------------- */
@@ -278,9 +290,9 @@ async function viewRifa(id) {
         h("h1", { text: R.titulo }), R.descricao ? h("p", { class: "desc", text: R.descricao }) : null,
         h("div", { class: "priceline" }, h("span", { class: "eyebrow", text: "Cada bilhete" }), h("b", { text: brl(R.preco) })),
         R.telefone ? h("p", { class: "meta", style: "margin-top:10px" }, "Dúvidas: ", h("a", { href: waLink(R.telefone, `Olá! Tenho uma dúvida sobre a rifa ${R.titulo}.`), target: "_blank", rel: "noopener", text: fone(R.telefone) })) : null)),
-    h("aside", { class: "stub" }, h("div", { class: "eyebrow", text: "Sorteio em" }), cd,
-      h("div", { style: "font-size:.9rem", text: R.dataSorteio ? new Date(R.dataSorteio).toLocaleString("pt-BR", { weekday: "long", day: "2-digit", month: "long", hour: "2-digit", minute: "2-digit" }) : "Data a definir" }),
-      R.extracao ? h("div", { class: "meta", text: "Extração: " + R.extracao }) : null));
+    h("aside", { class: "stub" }, ...(R.dataSorteio ? [h("div", { class: "eyebrow", text: "Sorteio em" }), cd,
+      h("div", { style: "font-size:.9rem", text: new Date(R.dataSorteio).toLocaleString("pt-BR", { weekday: "long", day: "2-digit", month: "long", hour: "2-digit", minute: "2-digit" }) })] : [h("div", { class: "eyebrow", text: "Sorteio" })]),
+      R.extracao ? h("div", { style: R.dataSorteio ? "" : "font-family:var(--f-display);font-size:1.4rem;font-weight:800", class: R.dataSorteio ? "meta" : "", text: R.dataSorteio ? "Extração: " + R.extracao : R.extracao }) : null));
   tick(); timers.push(setInterval(tick, 1000));
 
   const winner = R.numeroSorteado != null ? h("section", { class: "winner" },
