@@ -411,6 +411,9 @@ async function viewRifa(id) {
 }
 
 /* ---------------- pedido / pagamento ---------------- */
+const ESPERA = {};
+const marcarEspera = c => { try { sessionStorage.setItem("espera-" + c, String(Date.now())); } catch {} delete ESPERA[c]; };
+const inicioEspera = c => { if (!ESPERA[c]) { let v = 0; try { v = Number(sessionStorage.getItem("espera-" + c)); } catch {} ESPERA[c] = v || Date.now(); try { sessionStorage.setItem("espera-" + c, String(ESPERA[c])); } catch {} } return ESPERA[c]; };
 // Fotos grandes do celular são reduzidas antes do envio (máx. 1800 px, JPEG).
 async function prepararArquivo(f) {
   if (!/^image\/(jpeg|png|webp)$/.test(f.type) || f.size < 1.2e6) return f;
@@ -430,41 +433,67 @@ async function viewPedido(codigo) {
     let p;
     try { p = await api("pedidos/" + codigo); } catch (e) { return setView(h("div", { class: "empty", text: e.message })); }
     if (p.status === lastStatus && p.status !== "pendente") return;
-    if (lastStatus === "pendente" && p.status === "pendente" && !!p.comprovanteEnviado === !!atual?.comprovanteEnviado) { atual = p; return updateTimer(p); }
+    if (lastStatus === "pendente" && p.status === "pendente" && !!p.comprovanteEnviado === !!atual?.comprovanteEnviado && !!p.avisouPago === !!atual?.avisouPago) { atual = p; return updateTimer(p); }
     lastStatus = p.status;
     render(p);
   }
   let timerEl, atual = null;
   function updateTimer(p) {
     if (!timerEl) return;
-    if (p.comprovanteEnviado) { timerEl.textContent = "em análise"; timerEl.style.fontSize = "1.1rem"; return; }
+    if (p.comprovanteEnviado || p.avisouPago) { timerEl.textContent = "confirmando…"; timerEl.style.fontSize = "1.1rem"; return; }
     const s = Math.max(0, Math.floor((new Date(p.expiraEm) - Date.now()) / 1000));
     timerEl.textContent = `${String(Math.floor(s / 60)).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`;
   }
   function blocoComprovante(p) {
-    const box = h("div", { class: "comprovante", style: "display:flex;flex-direction:column;gap:10px" });
+    const esperando = p.status === "pendente" && (p.avisouPago || p.comprovanteEnviado);
+    const box = h("div", { class: "comprovante", style: "display:flex;flex-direction:column;gap:12px" });
     const err = h("div", { class: "err", role: "alert" });
     const input = h("input", { type: "file", accept: "image/*,application/pdf", hidden: true });
-    const btn = h("button", { class: p.comprovanteEnviado ? "btn" : "btn primary big", type: "button", text: p.comprovanteEnviado ? "Enviar outro comprovante" : "✅ Já paguei – enviar comprovante" });
-    btn.onclick = () => input.click();
+    const btnComp = h("button", { class: esperando ? "btn" : "btn primary big", type: "button", text: p.comprovanteEnviado ? "Enviar outro comprovante" : "✅ Já paguei – enviar comprovante" });
+    const btnPago = h("button", { class: "btn big", type: "button", text: "💰 Pago – confirmar" });
+    btnComp.onclick = () => input.click();
     input.onchange = async () => {
       const f = input.files[0]; input.value = ""; if (!f) return;
-      err.textContent = ""; btn.disabled = true; btn.textContent = "Enviando comprovante…";
+      err.textContent = ""; btnComp.disabled = true; btnComp.textContent = "Enviando comprovante…";
       try {
         const arq = await prepararArquivo(f);
         const r = await fetch(API + "pedidos/" + encodeURIComponent(p.codigo) + "/comprovante", { method: "POST", headers: { "content-type": arq.type }, body: arq });
         const d = await r.json().catch(() => ({}));
         if (!r.ok) throw new Error(d.erro || "Não foi possível enviar. Tente de novo.");
-        lastStatus = null; await load();
-      } catch (e) { err.textContent = e.message; btn.disabled = false; btn.textContent = "✅ Já paguei – enviar comprovante"; }
+        marcarEspera(p.codigo); lastStatus = null; await load();
+      } catch (e) { err.textContent = e.message; btnComp.disabled = false; btnComp.textContent = "✅ Já paguei – enviar comprovante"; }
     };
-    if (p.comprovanteEnviado) box.append(h("div", { class: "note ok", style: "font-weight:600", text: "📨 Comprovante recebido! Agora é só aguardar: assim que o organizador conferir, esta página muda para Pagamento confirmado." }));
-    else box.append(h("p", { class: "muted", style: "font-size:.9rem", text: "Depois de pagar, toque no botão abaixo e envie a foto ou print do comprovante." }));
-    box.append(h("div", {}, btn), input, err);
+    btnPago.onclick = async () => {
+      err.textContent = ""; btnPago.disabled = true; btnPago.textContent = "Avisando…";
+      try {
+        const r = await fetch(API + "pedidos/" + encodeURIComponent(p.codigo) + "/pago", { method: "POST" });
+        const d = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(d.erro || "Não foi possível avisar. Tente de novo.");
+        marcarEspera(p.codigo); lastStatus = null; await load();
+      } catch (e) { err.textContent = e.message; btnPago.disabled = false; btnPago.textContent = "💰 Pago – confirmar"; }
+    };
+    if (esperando) {
+      const cont = h("b", { class: "num" });
+      const msg = h("div", { class: "meta" });
+      const ini = inicioEspera(p.codigo);
+      const tick = () => {
+        const falta = Math.max(0, 60 - Math.floor((Date.now() - ini) / 1000));
+        cont.textContent = falta > 0 ? `0:${String(falta).padStart(2, "0")}` : "";
+        msg.textContent = falta > 0 ? "Seus números serão confirmados em até 1 minuto. Não feche esta página." : "Quase lá! Ainda estamos conferindo o seu Pix, aguarde mais um pouquinho.";
+      };
+      tick(); timers.push(setInterval(tick, 1000));
+      box.append(h("div", { class: "espera" }, h("span", { class: "spinner", "aria-hidden": "true" }),
+        h("div", { style: "display:flex;flex-direction:column;gap:4px" }, h("div", { style: "font-weight:700" }, "Confirmando seu pagamento… ", cont), msg)));
+      if (!p.comprovanteEnviado) box.append(h("p", { class: "muted", style: "font-size:.9rem", text: "Se quiser agilizar, envie também o print do comprovante:" }));
+      box.append(h("div", {}, btnComp), input, err);
+    } else {
+      box.append(h("p", { class: "muted", style: "font-size:.9rem", text: "Depois de pagar, envie o print do comprovante ou toque em Pago – confirmar." }));
+      box.append(h("div", { class: "row", style: "gap:10px;flex-wrap:wrap" }, btnComp, btnPago), input, err);
+    }
     return box;
   }
   function render(p) {
-    atual = p; clearTimers(); timers.push(setInterval(() => { if (!document.hidden) load(); }, 6000));
+    atual = p; clearTimers(); timers.push(setInterval(() => { if (!document.hidden) load(); }, p.status === "pendente" && (p.avisouPago || p.comprovanteEnviado) ? 3000 : 6000));
     const nf = numFmt(p.inicio ?? 1, (p.inicio ?? 1) + (p.total || 0) - 1);
     const titulo = { pendente: "Pague para garantir seus números", pago: "Pagamento confirmado!", expirado: "O prazo de pagamento acabou", cancelado: "Pedido cancelado" }[p.status];
     const blocks = [];
@@ -505,7 +534,7 @@ async function viewPedido(codigo) {
       blocks.push(h("div", { class: "note warn" }, "Os números voltaram a ficar livres. Se você já pagou, envie o comprovante abaixo que o organizador confere. ", h("a", { href: "#rifa-" + p.rifaId, text: "Fazer um novo pedido" })));
       blocks.push(h("section", { class: "panel" }, blocoComprovante(p)));
     } else if (p.status === "pago") {
-      blocks.push(h("p", { class: "ok", text: "Seus números estão garantidos. Boa sorte no sorteio!" }));
+      blocks.push(h("div", { class: "note ok", style: "font-size:1.1rem;font-weight:700", text: "🎉 Números confirmados! Seus números estão garantidos. Boa sorte no sorteio!" }));
     }
     setView(h("div", { style: "display:flex;flex-direction:column;gap:22px" }, ...blocks));
   }

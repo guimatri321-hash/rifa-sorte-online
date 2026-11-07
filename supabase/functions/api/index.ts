@@ -260,6 +260,7 @@ function pedidoPublico(p: any, cfg: Configuracao) {
     pix: p.status === "pendente" && p.pix_copia_cola ? { copiaCola: p.pix_copia_cola, nome: cfg.pixNome } : null,
     whatsappOrganizador: p.telefone_suporte || cfg.whatsapp,
     comprovanteEnviado: !!p.comprovante_em,
+    avisouPago: !!p.aviso_pago_em,
   };
 }
 
@@ -515,13 +516,20 @@ Deno.serve(async (req: Request) => {
       if (n >= 5) return erro("Você já enviou comprovantes para este pedido. Aguarde a confirmação.", 429);
       await q("INSERT INTO comprovantes (pedido_id, tipo, dados) VALUES ($1, $2, decode($3, 'base64'))", [p.id, tipo, Buffer.from(dados).toString("base64")]);
       await q("UPDATE pedidos SET comprovante_em = now() WHERE id = $1", [p.id]);
-      // Comprovante enviado = pagamento confirmado automaticamente (o organizador confere depois no painel).
-      let confirmado = p.status === "pago";
-      if (!confirmado) {
-        try { await confirmarPagamento(p.id, "Automático (comprovante)"); confirmado = true; }
-        catch (e) { if (!(e instanceof HttpErro)) throw e; }
-      }
-      return json({ ok: true, confirmado }, 201);
+      await q("UPDATE pedidos SET aviso_pago_em = COALESCE(aviso_pago_em, now()) WHERE id = $1", [p.id]);
+      return json({ ok: true }, 201);
+    }
+
+    // Comprador avisa que pagou: o pedido sobe no painel e ganha mais 15 minutos para o organizador conferir.
+    if (m === "POST" && partes[0] === "pedidos" && partes[1] && partes[2] === "pago") {
+      const r = await q(
+        `UPDATE pedidos SET aviso_pago_em = now(), expira_em = GREATEST(expira_em, now() + interval '15 minutes')
+         WHERE codigo = $1 AND status = 'pendente' AND aviso_pago_em IS NULL RETURNING id`,
+        [partes[1].toUpperCase()]
+      );
+      const p = (await q("SELECT status FROM pedidos WHERE codigo = $1", [partes[1].toUpperCase()]))[0];
+      if (!p) return erro("Pedido não encontrado.", 404);
+      return json({ ok: true, status: p.status, avisado: r.length > 0 });
     }
 
     if (m === "GET" && partes[0] === "meus") {
@@ -563,6 +571,7 @@ Deno.serve(async (req: Request) => {
         const totais = await q(
           `SELECT rifa_id,
              count(*) FILTER (WHERE status = 'pendente') AS pendentes,
+             count(*) FILTER (WHERE status = 'pendente' AND (aviso_pago_em IS NOT NULL OR comprovante_em IS NOT NULL)) AS avisos,
              COALESCE(sum(valor_centavos) FILTER (WHERE status = 'pago'), 0) AS recebido,
              COALESCE(sum(valor_centavos) FILTER (WHERE status = 'pendente'), 0) AS a_receber
            FROM pedidos GROUP BY rifa_id`
@@ -575,6 +584,7 @@ Deno.serve(async (req: Request) => {
               ...rifaPublica(r),
               ganhadorCompleto: r.ganhador_nome || null,
               pendentes: Number(t.pendentes || 0),
+              avisos: Number(t.avisos || 0),
               recebido: Number(t.recebido || 0) / 100,
               aReceber: Number(t.a_receber || 0) / 100,
             };
@@ -650,14 +660,14 @@ Deno.serve(async (req: Request) => {
         const lista = await q(
           `SELECT p.*, r.titulo FROM pedidos p JOIN rifas r ON r.id = p.rifa_id
            ${filtros.length ? "WHERE " + filtros.join(" AND ") : ""}
-           ORDER BY (p.comprovante_em IS NOT NULL AND p.status = 'pendente') DESC, p.criado_em DESC LIMIT 1000`,
+           ORDER BY ((p.comprovante_em IS NOT NULL OR p.aviso_pago_em IS NOT NULL) AND p.status = 'pendente') DESC, p.criado_em DESC LIMIT 1000`,
           params
         );
         return json(
           lista.map(p => ({
             id: p.id, codigo: p.codigo, rifaId: p.rifa_id, rifaTitulo: p.titulo, nome: p.nome, whatsapp: p.whatsapp,
             cidade: p.cidade, cpf: p.cpf, cep: p.cep, numeroCasa: p.numero_casa, numeros: p.numeros, quantidade: p.quantidade, valor: p.valor_centavos / 100,
-            status: p.status, criadoEm: p.criado_em, expiraEm: p.expira_em, pagoEm: p.pago_em, por: p.confirmado_por, comprovanteEm: p.comprovante_em,
+            status: p.status, criadoEm: p.criado_em, expiraEm: p.expira_em, pagoEm: p.pago_em, por: p.confirmado_por, comprovanteEm: p.comprovante_em, avisoPagoEm: p.aviso_pago_em,
           }))
         );
       }

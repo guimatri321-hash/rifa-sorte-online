@@ -230,3 +230,7 @@ body.painel .panel,body.painel .card{background:#fff;backdrop-filter:none;-webki
 .entrada{margin-top:0}
 .comp-mini{cursor:zoom-in;align-self:flex-start;max-width:260px;border:1px solid var(--line);border-radius:12px;background:#fff;padding:6px;overflow:hidden}
 .comp-mini img{display:block;max-width:100%;max-height:320px;border-radius:8px;object-fit:contain}
+.espera{display:flex;align-items:center;gap:14px;padding:16px;border-radius:14px;background:linear-gradient(120deg,rgba(255,138,31,.12),rgba(255,77,109,.12),rgba(193,59,245,.12));border:1px solid rgba(255,77,109,.25)}
+.spinner{flex:0 0 auto;width:34px;height:34px;border-radius:50%;border:4px solid rgba(255,77,109,.2);border-top-color:var(--accent);animation:gira .9s linear infinite}
+@keyframes gira{to{transform:rotate(360deg)}}
+@media (prefers-reduced-motion:reduce){.spinner{animation-duration:2.5s}}

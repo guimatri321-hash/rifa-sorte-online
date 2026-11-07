@@ -188,11 +188,11 @@ function painel() {
     if (document.hidden || !$("overlay").hidden || document.activeElement?.matches("input,textarea,select")) return;
     try {
       const r = await api("admin/resumo");
-      const sig = JSON.stringify(r.map(x => [x.id, x.pagos, x.ocupados, x.pendentes, x.recebido, x.status, x.numeroSorteado]));
-      if (ASSINATURA && sig !== ASSINATURA && REFRESH) { const antes = JSON.parse(ASSINATURA); const novos = r.reduce((a, x) => a + x.pendentes, 0) - antes.reduce((a, x) => a + x[3], 0); if (novos > 0) toast(novos === 1 ? "Chegou 1 pedido novo." : `Chegaram ${novos} pedidos novos.`); REFRESH(); }
+      const sig = JSON.stringify(r.map(x => [x.id, x.pagos, x.ocupados, x.pendentes, x.recebido, x.status, x.numeroSorteado, x.avisos || 0]));
+      if (ASSINATURA && sig !== ASSINATURA && REFRESH) { const antes = JSON.parse(ASSINATURA); const novos = r.reduce((a, x) => a + x.pendentes, 0) - antes.reduce((a, x) => a + x[3], 0); const avisos = r.reduce((a, x) => a + (x.avisos || 0), 0) - antes.reduce((a, x) => a + (x[7] || 0), 0); if (avisos > 0) { toast("🔔 Cliente avisou que pagou! Confira em Pedidos."); try { navigator.vibrate?.(200); } catch {} } else if (novos > 0) toast(novos === 1 ? "Chegou 1 pedido novo." : `Chegaram ${novos} pedidos novos.`); REFRESH(); }
       ASSINATURA = sig;
     } catch {}
-  }, 12000);
+  }, 5000);
   const tabs = h("div", { class: "atabs", role: "tablist" },
     [["rifas", "Rifas"], ["pedidos", "Pedidos"], ["config", "Configurações"]].map(([k, l]) =>
       h("button", { type: "button", "aria-pressed": String(ABA === k), onclick: () => { ABA = k; painel(); } }, l)));
@@ -205,7 +205,7 @@ function painel() {
 async function abaRifas(box) {
   REFRESH = () => { if (ABA === "rifas") painel(); };
   if (!box.childElementCount) box.append(h("p", { class: "muted", text: "Carregando…" }));
-  try { RIFAS = await api("admin/resumo"); ASSINATURA = JSON.stringify(RIFAS.map(x => [x.id, x.pagos, x.ocupados, x.pendentes, x.recebido, x.status, x.numeroSorteado])); } catch (e) { return box.replaceChildren(h("p", { class: "err", text: e.message })); }
+  try { RIFAS = await api("admin/resumo"); ASSINATURA = JSON.stringify(RIFAS.map(x => [x.id, x.pagos, x.ocupados, x.pendentes, x.recebido, x.status, x.numeroSorteado, x.avisos || 0])); } catch (e) { return box.replaceChildren(h("p", { class: "err", text: e.message })); }
   const tot = RIFAS.reduce((a, r) => ({ rec: a.rec + r.recebido, ar: a.ar + r.aReceber, pend: a.pend + r.pendentes, ativas: a.ativas + (r.vendasAbertas ? 1 : 0) }), { rec: 0, ar: 0, pend: 0, ativas: 0 });
   box.replaceChildren(
     h("section", { class: "stats" },
@@ -347,7 +347,7 @@ async function abaPedidos(box) {
       const wa = waLink(p.whatsapp, `Olá, ${p.nome.split(" ")[0]}! Sobre seu pedido ${p.codigo} na rifa ${p.rifaTitulo}: `);
       list.append(h("div", { class: "order" + (ant && !ant.has(p.id) ? " novo" : "") },
         h("div", { style: "min-width:0;display:flex;flex-direction:column;gap:6px" },
-          h("div", {}, h("b", { text: p.nome }), " ", h("span", { class: "status " + p.status, text: p.status }), " ", p.comprovanteEm && p.status !== "pago" ? h("span", { class: "status pago", style: "background:#ecfdf3", text: "📎 comprovante" }) : null, " ", h("span", { class: "meta num", text: p.codigo })),
+          h("div", {}, h("b", { text: p.nome }), " ", h("span", { class: "status " + p.status, text: p.status }), " ", p.status === "pendente" && (p.avisoPagoEm || p.comprovanteEm) ? h("span", { class: "status pendente", style: "background:#FFE4E9;border-color:#FF4D6D", text: p.comprovanteEm ? "🔔 pagou · comprovante enviado" : "🔔 cliente diz que pagou" }) : null, " ", h("span", { class: "meta num", text: p.codigo })),
           h("div", { class: "meta" }, `${p.rifaTitulo} · ${fmt(p.quantidade)} números · `, h("b", { class: "num", text: brl(p.valor) }), ` · ${fone(p.whatsapp)}`),
           h("div", { class: "meta num", text: [p.cpf ? "CPF " + cpfFmt(p.cpf) : "", p.cep ? `CEP ${p.cep.slice(0, 5)}-${p.cep.slice(5)}, nº ${p.numeroCasa}` : "", p.cidade].filter(Boolean).join(" · ") }),
           h("div", { class: "meta", text: `Pedido ${dt(p.criadoEm)}` + (p.status === "pendente" ? ` · expira ${dt(p.expiraEm)}` : p.pagoEm ? ` · pago ${dt(p.pagoEm)}` : "") + (p.comprovanteEm ? ` · comprovante enviado ${dt(p.comprovanteEm)}` : "") + (p.por ? ` · ${p.status === "cancelado" ? "cancelado" : "confirmado"} por ${p.por}` : "") }),
