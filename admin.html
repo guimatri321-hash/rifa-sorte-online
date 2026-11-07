@@ -328,6 +328,7 @@ async function abaPedidos(box) {
           h("details", {}, h("summary", { class: "meta", style: "cursor:pointer", text: "Ver números" }), h("div", { class: "chips", style: "margin-top:6px" }, p.numeros.map(n => h("span", { class: "chip", text: nfRifa(p.rifaId)(n) }))))),
         h("div", { class: "acts", style: "flex-direction:column;align-items:stretch" },
           p.status !== "pago" && p.status !== "cancelado" ? confirmBtn("Confirmar Pix", "Recebeu? Confirmar", async () => { await api(`admin/pedidos/${p.id}/confirmar`, { method: "POST" }); toast("Pagamento confirmado."); carregar(); }, "primary") : null,
+          p.status === "cancelado" ? confirmBtn("Reativar como pago", "Confirmar reativação", async () => { await api(`admin/pedidos/${p.id}/confirmar`, { method: "POST" }); toast("Pedido reativado como pago."); carregar(); }) : null,
           p.status === "expirado" || p.status === "cancelado" ? null : confirmBtn("Cancelar pedido", "Liberar os números?", async () => { await api(`admin/pedidos/${p.id}/cancelar`, { method: "POST" }); toast("Pedido cancelado e números liberados."); carregar(); }),
           wa ? h("a", { class: "btn sm", href: wa, target: "_blank", rel: "noopener", text: "WhatsApp" }) : null)));
     }
