@@ -77,6 +77,9 @@ const CONFIG_PADRAO = {
   minutosReserva: 30,
   maxPorPedido: 1000,
   regras: "",
+  noiteAtivo: "sim",
+  noiteInicio: 22,
+  noiteFim: 8,
 };
 type Configuracao = typeof CONFIG_PADRAO;
 
@@ -91,6 +94,20 @@ async function lerConfig(): Promise<Configuracao> {
     cfg[l.chave] = v;
   }
   return cfg;
+}
+// Modo noite: entre noiteInicio e noiteFim (horário de Brasília), quem toca em "Pago" já fica com os números
+// valendo; o organizador confere de manhã ("Noite (conferir)") e cancela o que não caiu.
+function ehNoite(c: Configuracao) {
+  if (c.noiteAtivo !== "sim") return false;
+  const h = Number(new Intl.DateTimeFormat("en-US", { timeZone: "America/Sao_Paulo", hour: "numeric", hourCycle: "h23" }).format(new Date()));
+  const ini = Number(c.noiteInicio), fim = Number(c.noiteFim);
+  return ini === fim ? true : ini < fim ? h >= ini && h < fim : h >= ini || h < fim;
+}
+const QUEM_NOITE = "Noite (conferir)";
+async function confirmarSeNoite(pedidoId: number) {
+  if (!ehNoite(await lerConfig())) return false;
+  try { await confirmarPagamento(pedidoId, QUEM_NOITE); return true; }
+  catch (e) { if (e instanceof HttpErro) return false; throw e; }
 }
 function configPublica(c: Configuracao) {
   return {
@@ -579,7 +596,8 @@ Deno.serve(async (req: Request) => {
       await q("INSERT INTO comprovantes (pedido_id, tipo, dados) VALUES ($1, $2, decode($3, 'base64'))", [p.id, tipo, Buffer.from(dados).toString("base64")]);
       await q("UPDATE pedidos SET comprovante_em = now() WHERE id = $1", [p.id]);
       await q("UPDATE pedidos SET aviso_pago_em = COALESCE(aviso_pago_em, now()) WHERE id = $1", [p.id]);
-      return json({ ok: true }, 201);
+      const confirmado = p.status !== "pago" && (await confirmarSeNoite(p.id));
+      return json({ ok: true, confirmado }, 201);
     }
 
     // Comprador avisa que pagou: o pedido sobe no painel e ganha mais 15 minutos para o organizador conferir.
@@ -589,8 +607,9 @@ Deno.serve(async (req: Request) => {
          WHERE codigo = $1 AND status = 'pendente' AND aviso_pago_em IS NULL RETURNING id`,
         [partes[1].toUpperCase()]
       );
-      const p = (await q("SELECT status FROM pedidos WHERE codigo = $1", [partes[1].toUpperCase()]))[0];
+      const p = (await q("SELECT id, status FROM pedidos WHERE codigo = $1", [partes[1].toUpperCase()]))[0];
       if (!p) return erro("Pedido não encontrado.", 404);
+      if (p.status === "pendente" && (await confirmarSeNoite(p.id))) p.status = "pago";
       return json({ ok: true, status: p.status, avisado: r.length > 0 });
     }
 
@@ -645,6 +664,7 @@ Deno.serve(async (req: Request) => {
           `SELECT rifa_id,
              count(*) FILTER (WHERE status = 'pendente') AS pendentes,
              count(*) FILTER (WHERE status = 'pendente' AND (aviso_pago_em IS NOT NULL OR comprovante_em IS NOT NULL)) AS avisos,
+             count(*) FILTER (WHERE status = 'pago' AND confirmado_por = 'Noite (conferir)') AS conferir,
              COALESCE(sum(valor_centavos) FILTER (WHERE status = 'pago'), 0) AS recebido,
              COALESCE(sum(valor_centavos) FILTER (WHERE status = 'pendente'), 0) AS a_receber
            FROM pedidos GROUP BY rifa_id`
@@ -658,6 +678,7 @@ Deno.serve(async (req: Request) => {
               ganhadorCompleto: r.ganhador_nome || null,
               pendentes: Number(t.pendentes || 0),
               avisos: Number(t.avisos || 0),
+              conferir: Number(t.conferir || 0),
               recebido: Number(t.recebido || 0) / 100,
               aReceber: Number(t.a_receber || 0) / 100,
             };
@@ -720,7 +741,8 @@ Deno.serve(async (req: Request) => {
         const filtros: string[] = [], params: unknown[] = [];
         const rifa = url.searchParams.get("rifa"), status = url.searchParams.get("status"), busca = texto(url.searchParams.get("busca"), 60);
         if (rifa) { params.push(Number(rifa)); filtros.push(`p.rifa_id = $${params.length}`); }
-        if (status) { params.push(status); filtros.push(`p.status = $${params.length}`); }
+        if (status === "conferir") { params.push(QUEM_NOITE); filtros.push(`p.status = 'pago' AND p.confirmado_por = $${params.length}`); }
+        else if (status) { params.push(status); filtros.push(`p.status = $${params.length}`); }
         if (busca) {
           const n = Number(busca);
           params.push(`%${busca.toLowerCase()}%`);
@@ -755,6 +777,11 @@ Deno.serve(async (req: Request) => {
         await confirmarPagamento(Number(partes[2]), organizador);
         return json({ ok: true });
       }
+      if (m === "POST" && partes[1] === "pedidos" && partes[3] === "conferido") {
+        const r = await q("UPDATE pedidos SET confirmado_por = $2 WHERE id = $1 AND status = 'pago' RETURNING id", [Number(partes[2]), organizador]);
+        if (!r.length) return erro("Só dá para marcar como conferido um pedido pago.", 409);
+        return json({ ok: true });
+      }
       if (m === "POST" && partes[1] === "pedidos" && partes[3] === "cancelar") {
         await cancelarPedido(Number(partes[2]), organizador);
         return json({ ok: true });
@@ -768,6 +795,8 @@ Deno.serve(async (req: Request) => {
           if (!(k in c)) continue;
           if (k === "minutosReserva") limpo[k] = Math.min(1440, Math.max(5, Math.floor(Number(c[k]) || 30)));
           else if (k === "maxPorPedido") limpo[k] = Math.min(10000, Math.max(1, Math.floor(Number(c[k]) || 1000)));
+          else if (k === "noiteInicio" || k === "noiteFim") limpo[k] = Math.min(23, Math.max(0, Math.floor(Number(c[k]) || 0)));
+          else if (k === "noiteAtivo") limpo[k] = c[k] === "sim" || c[k] === true ? "sim" : "nao";
           else limpo[k] = texto(c[k], k === "regras" ? 4000 : 140);
         }
         for (const [k, v] of Object.entries(limpo))
