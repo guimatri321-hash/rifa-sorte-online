@@ -140,6 +140,57 @@ function gerarPix(chave: string, nome: string, cidade: string, valorCentavos: nu
 /* Reservas que passaram do prazo voltam a ficar livres                */
 /* ------------------------------------------------------------------ */
 
+/* ---------- Mercado Pago (Pix com confirmação automática) ---------- */
+const MP_TOKEN = () => (Deno.env.get("MP_ACCESS_TOKEN") || "").trim();
+async function mp(path: string, init: RequestInit = {}) {
+  const r = await fetch("https://api.mercadopago.com" + path, {
+    ...init,
+    headers: { authorization: "Bearer " + MP_TOKEN(), "content-type": "application/json", ...(init.headers || {}) },
+  });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(`Mercado Pago ${r.status}: ${JSON.stringify(d).slice(0, 300)}`);
+  return d;
+}
+async function criarPixMP(ped: { id: number; codigo: string; nome: string; cpf: string; valor: number; titulo: string; minutos: number }) {
+  const partes = ped.nome.trim().split(/\s+/);
+  const exp = new Date(Date.now() + (ped.minutos + 15) * 60000).toISOString().replace("Z", "+00:00");
+  const d = await mp("/v1/payments", {
+    method: "POST",
+    headers: { "x-idempotency-key": "rifa-" + ped.codigo },
+    body: JSON.stringify({
+      transaction_amount: ped.valor / 100,
+      description: `Rifa ${ped.titulo} - pedido ${ped.codigo}`.slice(0, 120),
+      payment_method_id: "pix",
+      external_reference: ped.codigo,
+      notification_url: `${BASE}/webhook/mercadopago`,
+      date_of_expiration: exp,
+      payer: {
+        email: `pedido.${ped.codigo.toLowerCase()}@rifasorteonline.com.br`,
+        first_name: partes[0],
+        last_name: partes.slice(1).join(" ") || partes[0],
+        identification: { type: "CPF", number: ped.cpf },
+      },
+    }),
+  });
+  const qr = d?.point_of_interaction?.transaction_data?.qr_code;
+  if (!qr) throw new Error("Mercado Pago não devolveu o código Pix.");
+  await q("UPDATE pedidos SET pix_copia_cola = $2, mp_pagamento_id = $3 WHERE id = $1", [ped.id, qr, String(d.id)]);
+}
+// Consulta o pagamento no Mercado Pago e confirma o pedido se o Pix caiu.
+const ultimaConsulta = new Map<string, number>();
+async function conferirMP(pagamentoId: string, forcar = false) {
+  if (!MP_TOKEN() || !pagamentoId) return false;
+  if (!forcar && (ultimaConsulta.get(pagamentoId) || 0) > Date.now() - 5000) return false;
+  ultimaConsulta.set(pagamentoId, Date.now());
+  const d = await mp("/v1/payments/" + encodeURIComponent(pagamentoId));
+  if (d.status !== "approved") return false;
+  const p = (await q("SELECT id, status, valor_centavos FROM pedidos WHERE codigo = $1 AND mp_pagamento_id = $2", [String(d.external_reference || ""), String(d.id)]))[0];
+  if (!p || p.status === "pago") return false;
+  if (Math.round(Number(d.transaction_amount) * 100) < p.valor_centavos) return false;
+  try { await confirmarPagamento(p.id, "Mercado Pago (automático)"); return true; }
+  catch (e) { if (e instanceof HttpErro) { console.error("Pix aprovado mas não confirmado:", p.id, e.message); return false; } throw e; }
+}
+
 const SQL_EXPIRAR = `
   WITH exp AS (
     UPDATE pedidos SET status = 'expirado'
@@ -261,6 +312,7 @@ function pedidoPublico(p: any, cfg: Configuracao) {
     whatsappOrganizador: p.telefone_suporte || cfg.whatsapp,
     comprovanteEnviado: !!p.comprovante_em,
     avisouPago: !!p.aviso_pago_em,
+    pixAutomatico: !!p.mp_pagamento_id,
   };
 }
 
@@ -292,8 +344,10 @@ async function reservar(rifaId: number, corpo: any) {
   if (quantidade < 1) throw new HttpErro(400, "Escolha pelo menos um número.");
   if (quantidade > cfg.maxPorPedido) throw new HttpErro(400, `O máximo por compra é ${cfg.maxPorPedido} números.`);
 
+  const minutosReserva = Math.max(5, Number(cfg.minutosReserva) || 30);
+  let criado: any;
   try {
-   return await transacao(async client => {
+   criado = await transacao(async client => {
     await client.query(SQL_EXPIRAR);
     const rifa = (await client.query("SELECT * FROM rifas WHERE id = $1 FOR UPDATE", [rifaId])).rows[0];
     if (!rifa || rifa.status === "oculta") throw new HttpErro(404, "Rifa não encontrada.");
@@ -341,12 +395,17 @@ async function reservar(rifaId: number, corpo: any) {
       "INSERT INTO numeros (rifa_id, numero, pedido_id) SELECT $1, unnest($2::int[]), $3",
       [rifaId, escolhidos, ped.id]
     );
-    return { codigo: ped.codigo };
+    return { codigo: ped.codigo, id: ped.id, valor, titulo: rifa.titulo };
    });
   } catch (e: any) {
     if (e?.code === "23505") throw new HttpErro(409, "Alguns números acabaram de ser comprados. Tente de novo.");
     throw e;
   }
+  if (MP_TOKEN()) {
+    try { await criarPixMP({ id: criado.id, codigo: criado.codigo, nome, cpf, valor: criado.valor, titulo: criado.titulo, minutos: minutosReserva }); }
+    catch (e) { console.error("Falha ao criar Pix no Mercado Pago (usando Pix comum):", e); }
+  }
+  return { codigo: criado.codigo };
 }
 
 /* ------------------------------------------------------------------ */
@@ -500,6 +559,9 @@ Deno.serve(async (req: Request) => {
         await q("SELECT p.*, r.titulo, r.numero_inicial, r.total_numeros, r.telefone_suporte FROM pedidos p JOIN rifas r ON r.id = p.rifa_id WHERE p.codigo = $1", [partes[1].toUpperCase()])
       )[0];
       if (!p) return erro("Pedido não encontrado.", 404);
+      if (p.mp_pagamento_id && (p.status === "pendente" || p.status === "expirado")) {
+        try { if (await conferirMP(p.mp_pagamento_id)) { p.status = "pago"; } } catch (e) { console.error(e); }
+      }
       return json(pedidoPublico(p, await lerConfig()));
     }
 
@@ -530,6 +592,17 @@ Deno.serve(async (req: Request) => {
       const p = (await q("SELECT status FROM pedidos WHERE codigo = $1", [partes[1].toUpperCase()]))[0];
       if (!p) return erro("Pedido não encontrado.", 404);
       return json({ ok: true, status: p.status, avisado: r.length > 0 });
+    }
+
+    // Aviso do Mercado Pago: sempre reconsulta o pagamento na API antes de confirmar.
+    if (partes[0] === "webhook" && partes[1] === "mercadopago") {
+      let id = url.searchParams.get("data.id") || url.searchParams.get("id") || "";
+      const tipo = url.searchParams.get("type") || url.searchParams.get("topic") || "";
+      if (m === "POST") { const c: any = await corpo(); id = String(c?.data?.id || id || ""); }
+      if (id && (!tipo || tipo === "payment")) {
+        try { await conferirMP(id, true); } catch (e) { console.error("webhook MP:", e); }
+      }
+      return json({ ok: true });
     }
 
     if (m === "GET" && partes[0] === "meus") {
@@ -687,7 +760,7 @@ Deno.serve(async (req: Request) => {
         return json({ ok: true });
       }
 
-      if (m === "GET" && partes[1] === "config") return json(await lerConfig());
+      if (m === "GET" && partes[1] === "config") return json({ ...(await lerConfig()), mercadoPagoAtivo: !!MP_TOKEN() });
       if (m === "PUT" && partes[1] === "config") {
         const c = await corpo();
         const limpo: Record<string, unknown> = {};

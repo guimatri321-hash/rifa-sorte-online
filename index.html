@@ -472,6 +472,14 @@ async function viewPedido(codigo) {
         marcarEspera(p.codigo); lastStatus = null; await load();
       } catch (e) { err.textContent = e.message; btnPago.disabled = false; btnPago.textContent = "💰 Pago – confirmar"; }
     };
+    if (p.pixAutomatico && p.status === "pendente" && !p.comprovanteEnviado) {
+      box.append(h("div", { class: "espera" }, h("span", { class: "spinner", "aria-hidden": "true" }),
+        h("div", { style: "display:flex;flex-direction:column;gap:4px" }, h("div", { style: "font-weight:700", text: "Aguardando o seu Pix…" }),
+          h("div", { class: "meta", text: "Confirmação automática: assim que o Pix cair, seus números são confirmados aqui em segundos. Não precisa enviar comprovante." }))));
+      btnComp.className = "btn sm"; btnComp.textContent = "Paguei e não confirmou? Enviar comprovante";
+      box.append(h("div", {}, btnComp), input, err);
+      return box;
+    }
     if (esperando) {
       const cont = h("b", { class: "num" });
       const msg = h("div", { class: "meta" });
@@ -493,7 +501,7 @@ async function viewPedido(codigo) {
     return box;
   }
   function render(p) {
-    atual = p; clearTimers(); timers.push(setInterval(() => { if (!document.hidden) load(); }, p.status === "pendente" && (p.avisouPago || p.comprovanteEnviado) ? 3000 : 6000));
+    atual = p; clearTimers(); timers.push(setInterval(() => { if (!document.hidden) load(); }, p.status === "pendente" && (p.avisouPago || p.comprovanteEnviado || p.pixAutomatico) ? 3000 : 6000));
     const nf = numFmt(p.inicio ?? 1, (p.inicio ?? 1) + (p.total || 0) - 1);
     const titulo = { pendente: "Pague para garantir seus números", pago: "Pagamento confirmado!", expirado: "O prazo de pagamento acabou", cancelado: "Pedido cancelado" }[p.status];
     const blocks = [];
