@@ -1,7 +1,7 @@
 // Servidor da rifa (Supabase Edge Function "api").
 import postgres from "https://deno.land/x/postgresjs@v3.4.5/mod.js";
 import { Buffer } from "node:buffer";
-import { createHmac, randomBytes, randomInt, timingSafeEqual } from "node:crypto";
+import { createHmac, pbkdf2Sync, randomBytes, randomInt, timingSafeEqual } from "node:crypto";
 
 const BASE = (Deno.env.get("SUPABASE_URL") || "").replace(/\/$/, "") + "/functions/v1/api";
 
@@ -153,43 +153,45 @@ const expirar = () => q(SQL_EXPIRAR);
 /* Acesso dos organizadores                                            */
 /* ------------------------------------------------------------------ */
 
-function organizadores() {
-  const lista: { nome: string; senha: string }[] = [];
-  // O segredo ORGANIZADORES no Supabase tem prioridade; sem ele, vale esta lista.
-  const ORGANIZADORES_PADRAO = "Guilherme:103425;Sócio:103425";
-  for (const parte of (Deno.env.get("ORGANIZADORES") || (Deno.env.get("ADMIN_PASSWORD") ? "" : ORGANIZADORES_PADRAO)).split(";")) {
-    const i = parte.indexOf(":");
-    if (i > 0) {
-      const nome = parte.slice(0, i).trim(), senha = parte.slice(i + 1).trim();
-      if (nome && senha) lista.push({ nome, senha });
-    }
-  }
-  const unica = Deno.env.get("ADMIN_PASSWORD");
-  if (unica) lista.push({ nome: "Organizador", senha: unica });
-  if (!lista.length) throw new HttpErro(503, "Defina o segredo ORGANIZADORES no Supabase para usar o painel.");
-  return lista;
+// Organizadores e chave de assinatura ficam só no banco (tabela configuracoes, nunca expostas pela API).
+// Cada senha é guardada como hash PBKDF2: { nome, salt, hash }.
+type Org = { nome: string; salt: string; hash: string };
+let cacheOrgs: { ate: number; lista: Org[]; segredo: string } | null = null;
+async function dadosAdmin() {
+  if (cacheOrgs && cacheOrgs.ate > Date.now()) return cacheOrgs;
+  const linhas = await q("SELECT chave, valor FROM configuracoes WHERE chave IN ('organizadores', 'adminSecret')");
+  const m = new Map(linhas.map((l: any) => [l.chave, l.valor]));
+  const lista = (Array.isArray(m.get("organizadores")) ? m.get("organizadores") : []) as Org[];
+  const segredo = String(m.get("adminSecret") || "");
+  if (!lista.length || segredo.length < 32) throw new HttpErro(503, "Painel sem organizadores configurados.");
+  cacheOrgs = { ate: Date.now() + 60_000, lista, segredo };
+  return cacheOrgs;
 }
-const chave = () => Deno.env.get("ADMIN_SECRET") || organizadores().map(o => o.nome + ":" + o.senha).join("|");
+const organizadores = async () => (await dadosAdmin()).lista;
+function senhaConfere(o: Org, senha: string) {
+  const h = pbkdf2Sync(senha, o.salt, 120000, 32, "sha256").toString("hex");
+  return igual(h, o.hash);
+}
 const b64 = (s: string) => Buffer.from(s, "utf8").toString("base64url");
 const deB64 = (s: string) => Buffer.from(s, "base64url").toString("utf8");
-function assinar(exp: number, nome: string) {
-  return createHmac("sha256", chave()).update(`admin.${exp}.${nome}`).digest("hex");
+async function assinar(exp: number, nome: string) {
+  return createHmac("sha256", (await dadosAdmin()).segredo).update(`admin.${exp}.${nome}`).digest("hex");
 }
-function criarToken(nome: string) {
+async function criarToken(nome: string) {
   const exp = Date.now() + 12 * 3600 * 1000;
-  return `${exp}.${b64(nome)}.${assinar(exp, nome)}`;
+  return `${exp}.${b64(nome)}.${await assinar(exp, nome)}`;
 }
 function igual(a: string, b: string) {
   const x = Buffer.from(a), y = Buffer.from(b);
   return x.length === y.length && timingSafeEqual(x, y);
 }
-function exigirAdmin(req: Request): string {
+async function exigirAdmin(req: Request): Promise<string> {
   const tok = req.headers.get("x-admin-token") || "";
   const [expStr, nomeB64, sig] = tok.split(".");
   const exp = Number(expStr);
   if (!exp || !nomeB64 || !sig || exp < Date.now()) throw new HttpErro(401, "Sessão expirada. Entre de novo.");
   const nome = deB64(nomeB64);
-  if (!igual(assinar(exp, nome), sig) || !organizadores().some(o => o.nome === nome))
+  if (!igual(await assinar(exp, nome), sig) || !(await organizadores()).some(o => o.nome === nome))
     throw new HttpErro(401, "Sessão inválida. Entre de novo.");
   return nome;
 }
@@ -197,7 +199,7 @@ const tentativas = new Map<string, { n: number; ate: number }>();
 function limitarLogin(ip: string) {
   const agora = Date.now();
   const t = tentativas.get(ip);
-  if (t && t.ate > agora && t.n >= 8) throw new HttpErro(429, "Muitas tentativas. Espere 15 minutos.");
+  if (t && t.ate > agora && t.n >= 5) throw new HttpErro(429, "Muitas tentativas. Espere 15 minutos.");
   if (!t || t.ate < agora) tentativas.set(ip, { n: 1, ate: agora + 15 * 60 * 1000 });
   else t.n++;
 }
@@ -522,15 +524,15 @@ Deno.serve(async (req: Request) => {
 
     /* ---------- administrador ---------- */
     if (partes[0] === "admin") {
-      if (m === "GET" && partes[1] === "organizadores") return json(organizadores().map(o => o.nome));
+      if (m === "GET" && partes[1] === "organizadores") return json((await organizadores()).map(o => o.nome));
       if (m === "POST" && partes[1] === "login") {
         limitarLogin((req.headers.get("x-forwarded-for") || "?").split(",")[0].trim());
         const { nome, senha } = await corpo();
-        const quem = organizadores().find(o => o.nome === String(nome || ""));
-        if (!quem || !igual(quem.senha, String(senha || ""))) return erro("Nome ou senha incorretos.", 401);
-        return json({ token: criarToken(quem.nome), nome: quem.nome });
+        const quem = (await organizadores()).find(o => o.nome === String(nome || ""));
+        if (!quem || !senhaConfere(quem, String(senha || ""))) return erro("Nome ou senha incorretos.", 401);
+        return json({ token: await criarToken(quem.nome), nome: quem.nome });
       }
-      const organizador = exigirAdmin(req);
+      const organizador = await exigirAdmin(req);
       await expirar();
 
       if (m === "GET" && partes[1] === "resumo") {
