@@ -130,7 +130,7 @@ async function route() {
   renderQuem();
   let m;
   if ((m = hash.match(/^pedido-([A-Za-z0-9]+)$/))) return viewPedido(m[1]);
-  if (!comprador() || hash === "entrar") return viewEntrada(hash === "entrar" ? (() => { try { return sessionStorage.getItem("voltar") || ""; } catch { return ""; } })() : hash);
+  if (hash === "entrar" || (!comprador() && (hash.startsWith("rifa-") || hash === "meus"))) return viewEntrada(hash === "entrar" ? (() => { try { return sessionStorage.getItem("voltar") || ""; } catch { return ""; } })() : hash);
   if ((m = hash.match(/^rifa-(\d+)$/))) return viewRifa(+m[1]);
   if ((m = hash.match(/^pedido-([A-Za-z0-9]+)$/))) return viewPedido(m[1]);
   if (hash === "meus") return viewMeus();
@@ -186,7 +186,7 @@ function viewEntrada(voltar) {
       h("label", { class: "f", style: "flex:2 1 160px" }, "CEP", cepIn),
       h("label", { class: "f", style: "flex:1 1 100px" }, "Número da casa", h("input", { id: "eNum", autocomplete: "address-line2", placeholder: "Ex.: 120", value: c.numeroCasa || "" }))),
     endereco,
-    err, h("button", { class: "btn primary big", type: "submit", text: "Continuar para as rifas" }));
+    err, h("button", { class: "btn primary big", type: "submit", text: "Continuar" }));
   form.addEventListener("submit", e => {
     e.preventDefault();
     const d = { nome: $("eNome").value.trim().replace(/\s+/g, " "), cpf: dig($("eCpf").value), whatsapp: $("eWpp").value, cep: dig(cepIn.value), numeroCasa: $("eNum").value.trim(), cidade: local.cidade, endereco: local.endereco };
@@ -200,18 +200,10 @@ function viewEntrada(voltar) {
     try { sessionStorage.removeItem("voltar"); } catch {}
     if (location.hash.slice(1) === (voltar || "")) route(); else location.hash = voltar || "";
   });
-  const cards = h("section", { class: "cards duas", "aria-label": "Rifas" }, h("div", { class: "empty", text: "Carregando rifas…" }));
-  preencherCards(cards, (e, r) => {
-    e.preventDefault(); voltar = "rifa-" + r.id;
-    try { sessionStorage.setItem("voltar", voltar); } catch {}
-    form.scrollIntoView({ behavior: "smooth", block: "center" }); setTimeout(() => $("eNome")?.focus(), 400);
-  });
-  setView(h("div", { style: "display:flex;flex-direction:column;gap:24px" },
-    h("section", { class: "hero" }, h("div", { class: "eyebrow", text: "Rifas abertas" }),
-      h("h1", {}, "Escolha o prêmio e ", h("span", { class: "grad-text", text: "garanta seus números" }))),
-    cards,
+  setView(h("div", { style: "display:flex;flex-direction:column;gap:16px" },
+    h("a", { href: "#", class: "meta", text: "← Ver todas as rifas" }),
     h("section", { class: "panel entrada", id: "dados" },
-    h("div", {}, h("div", { class: "eyebrow", text: "Bem-vindo" }), h("h1", { text: "Seus dados para participar" }),
+    h("div", {}, h("div", { class: "eyebrow", text: "Antes de escolher seus números" }), h("h1", { text: "Seus dados para participar" }),
       h("p", { class: "muted", style: "margin-top:6px", text: "Usamos esses dados para registrar seus bilhetes e entregar o prêmio se você ganhar. Eles não aparecem para outras pessoas." })),
     form)));
 }
