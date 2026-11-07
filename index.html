@@ -211,7 +211,12 @@ function viewEntrada(voltar) {
 function setView(...nodes) { $("view").replaceChildren(...nodes); }
 
 /* ---------------- vitrine ---------------- */
-const pctTxt = p => (p > 0 && p < 1 ? p.toLocaleString("pt-BR", { maximumFractionDigits: 1 }) : Math.floor(p).toLocaleString("pt-BR")) + "%";
+const pctTxt = p => {
+  if (!(p > 0)) return "0%";
+  if (p < 0.01) return "0,01%";
+  const casas = p < 1 ? 2 : p < 10 ? 1 : 0;
+  return (Math.floor(p * 10 ** casas) / 10 ** casas).toLocaleString("pt-BR", { maximumFractionDigits: casas }) + "%";
+};
 const diaMes = d => new Date(d).toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit" });
 function faltam(d) {
   if (!d) return "";
