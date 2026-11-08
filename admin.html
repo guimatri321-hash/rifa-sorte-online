@@ -328,7 +328,7 @@ let ULTIMOS = [];
 async function abaPedidos(box) {
   if (!RIFAS.length) { try { RIFAS = await api("admin/resumo"); } catch {} }
   const selR = h("select", { id: "fRifa", "aria-label": "Rifa" }, h("option", { value: "", text: "Todas as rifas" }), RIFAS.map(r => h("option", { value: String(r.id), text: r.titulo, selected: FILTRO.rifa === String(r.id) || null })));
-  const selS = h("select", { id: "fStatus", "aria-label": "Situação" }, [["pendente", "Aguardando Pix"], ["conferir", "🌙 A conferir (noite)"], ["pago", "Pagos"], ["expirado", "Expirados"], ["cancelado", "Cancelados"], ["", "Todos"]].map(([v, l]) => h("option", { value: v, text: l, selected: FILTRO.status === v || null })));
+  const selS = h("select", { id: "fStatus", "aria-label": "Situação" }, [["pendente", "Aguardando Pix"], ["conferir", "🔎 A conferir no banco"], ["pago", "Pagos"], ["expirado", "Expirados"], ["cancelado", "Cancelados"], ["", "Todos"]].map(([v, l]) => h("option", { value: v, text: l, selected: FILTRO.status === v || null })));
   const busca = h("input", { id: "fBusca", placeholder: "Nome, CPF, WhatsApp, código ou número", value: FILTRO.busca, style: "flex:1 1 220px;min-width:0" });
   const list = h("div", { class: "olist" });
   const resumo = h("div", { class: "meta num" });
@@ -347,7 +347,7 @@ async function abaPedidos(box) {
       const wa = waLink(p.whatsapp, `Olá, ${p.nome.split(" ")[0]}! Sobre seu pedido ${p.codigo} na rifa ${p.rifaTitulo}: `);
       list.append(h("div", { class: "order" + (ant && !ant.has(p.id) ? " novo" : "") },
         h("div", { style: "min-width:0;display:flex;flex-direction:column;gap:6px" },
-          h("div", {}, h("b", { text: p.nome }), " ", h("span", { class: "status " + p.status, text: p.status }), " ", p.status === "pago" && p.por === "Noite (conferir)" ? h("span", { class: "status pendente", text: "🌙 conferir no banco" }) : null, " ", p.status === "pendente" && (p.avisoPagoEm || p.comprovanteEm) ? h("span", { class: "status pendente", style: "background:#FFE4E9;border-color:#FF4D6D", text: p.comprovanteEm ? "🔔 pagou · comprovante enviado" : "🔔 cliente diz que pagou" }) : null, " ", h("span", { class: "meta num", text: p.codigo })),
+          h("div", {}, h("b", { text: p.nome }), " ", h("span", { class: "status " + p.status, text: p.status }), " ", p.status === "pago" && p.por === "Noite (conferir)" ? h("span", { class: "status pendente", text: "🔎 conferir no banco" }) : null, " ", p.status === "pendente" && (p.avisoPagoEm || p.comprovanteEm) ? h("span", { class: "status pendente", style: "background:#FFE4E9;border-color:#FF4D6D", text: p.comprovanteEm ? "🔔 pagou · comprovante enviado" : "🔔 cliente diz que pagou" }) : null, " ", h("span", { class: "meta num", text: p.codigo })),
           h("div", { class: "meta" }, `${p.rifaTitulo} · ${fmt(p.quantidade)} números · `, h("b", { class: "num", text: brl(p.valor) }), ` · ${fone(p.whatsapp)}`),
           h("div", { class: "meta num", text: [p.cpf ? "CPF " + cpfFmt(p.cpf) : "", p.cep ? `CEP ${p.cep.slice(0, 5)}-${p.cep.slice(5)}, nº ${p.numeroCasa}` : "", p.cidade].filter(Boolean).join(" · ") }),
           h("div", { class: "meta", text: `Pedido ${dt(p.criadoEm)}` + (p.status === "pendente" ? ` · expira ${dt(p.expiraEm)}` : p.pagoEm ? ` · pago ${dt(p.pagoEm)}` : "") + (p.comprovanteEm ? ` · comprovante enviado ${dt(p.comprovanteEm)}` : "") + (p.por ? ` · ${p.status === "cancelado" ? "cancelado" : "confirmado"} por ${p.por}` : "") }),
@@ -390,10 +390,10 @@ async function abaConfig(box) {
     h("p", { class: "muted", text: "Com a chave Pix preenchida, cada pedido mostra um QR Code com o valor exato. A confirmação é feita por você na aba Pedidos até a confirmação automática ser ligada." }),
     h("div", { class: "row" }, campo("cPix", "Chave Pix (CNPJ, e-mail, telefone ou aleatória)", c.pixChave, { placeholder: "Deixe vazio por enquanto" }), campo("cPixNome", "Nome de quem recebe", c.pixNome)),
     h("div", { class: "row" }, campo("cPixCidade", "Cidade de quem recebe", c.pixCidade), campo("cWpp", "WhatsApp do organizador", c.whatsapp, { inputmode: "tel" })),
-    h("h2", { text: "Modo noite" }),
-    h("p", { class: "muted", text: "No horário da noite, quem tocar em \"Pago – confirmar\" ou enviar o comprovante já fica com os números valendo. De manhã, use o filtro \"🌙 A conferir\" em Pedidos: confira no banco e clique em \"Caiu no banco\" ou cancele." }),
+    h("h2", { text: "Confirmação na hora" }),
+    h("p", { class: "muted", text: "Quando ligado, quem tocar em \"Pago – confirmar\" ou enviar o comprovante já fica com os números valendo. Depois, use o filtro \"🔎 A conferir no banco\" em Pedidos: confira no banco e clique em \"Caiu no banco\" ou cancele. Para valer o dia todo, deixe o início e o fim com a mesma hora (ex.: 0 e 0)." }),
     h("div", { class: "row" },
-      h("label", { class: "f" }, "Modo noite", h("select", { id: "cNoite" }, h("option", { value: "sim", text: "Ligado", selected: c.noiteAtivo !== "nao" || null }), h("option", { value: "nao", text: "Desligado", selected: c.noiteAtivo === "nao" || null }))),
+      h("label", { class: "f" }, "Confirmação na hora", h("select", { id: "cNoite" }, h("option", { value: "sim", text: "Ligado", selected: c.noiteAtivo !== "nao" || null }), h("option", { value: "nao", text: "Desligado", selected: c.noiteAtivo === "nao" || null }))),
       campo("cNoiteIni", "Começa às (hora)", c.noiteInicio ?? 22, { type: "number", min: "0", max: "23" }),
       campo("cNoiteFim", "Termina às (hora)", c.noiteFim ?? 8, { type: "number", min: "0", max: "23" })),
     h("h2", { text: "Regras de compra" }),
