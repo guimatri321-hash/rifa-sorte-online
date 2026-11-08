@@ -285,7 +285,8 @@ async function viewRifa(id) {
       h("div", { class: "prize-img" }, R.imagem ? h("img", { src: R.imagem, alt: "Foto do prêmio" }) : h("span", { class: "ph", text: "Nº" })),
       h("div", { style: "min-width:0" }, h("div", { class: "eyebrow", text: R.vendasAbertas ? `Rifa aberta · números de ${nf(INI)} a ${nf(FIM)}` : "Vendas encerradas" }),
         h("h1", { text: R.titulo }), R.descricao ? h("p", { class: "desc", text: R.descricao }) : null,
-        h("div", { class: "priceline" }, h("span", { class: "eyebrow", text: "Cada bilhete" }), h("b", { text: brl(R.preco) })))),
+        h("div", { class: "priceline" }, h("span", { class: "eyebrow", text: "Cada bilhete" }), h("b", { text: brl(R.preco) })),
+        R.telefone ? h("p", { class: "meta", style: "margin-top:10px" }, "Dúvidas: ", h("a", { href: waLink(R.telefone, `Olá! Tenho uma dúvida sobre a rifa ${R.titulo}.`), target: "_blank", rel: "noopener", text: fone(R.telefone) })) : null)),
     h("aside", { class: "stub" }, ...(R.dataSorteio ? [h("div", { class: "eyebrow", text: "Sorteio em" }), cd,
       h("div", { style: "font-size:.9rem", text: new Date(R.dataSorteio).toLocaleString("pt-BR", { weekday: "long", day: "2-digit", month: "long", hour: "2-digit", minute: "2-digit" }) })] : [h("div", { class: "eyebrow", text: "Sorteio" })]),
       R.extracao ? h("div", { style: R.dataSorteio ? "" : "font-family:var(--f-display);font-size:1.4rem;font-weight:800", class: R.dataSorteio ? "meta" : "", text: R.dataSorteio ? "Extração: " + R.extracao : R.extracao }) : null));
@@ -535,6 +536,8 @@ async function viewPedido(codigo) {
         pay.append(h("div", { class: "note warn", text: "O pagamento por Pix ainda está sendo configurado. Fale com o organizador pelo WhatsApp para pagar e garantir seus números." }));
       }
       pay.append(blocoComprovante(p));
+      if (p.whatsappOrganizador) pay.append(h("p", { class: "meta", style: "margin-top:4px" }, "Dúvidas no pagamento? Chame no WhatsApp: ",
+        h("a", { href: waLink(p.whatsappOrganizador, `Olá! Tenho uma dúvida sobre o pagamento do pedido ${p.codigo} (${brl(p.valor)}).`), target: "_blank", rel: "noopener", text: fone(p.whatsappOrganizador) })));
       blocks.push(pay);
       updateTimer(p);
       timers.push(setInterval(() => updateTimer(atual), 1000));
